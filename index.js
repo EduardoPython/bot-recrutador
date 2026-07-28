@@ -8,7 +8,7 @@ app.use(cors());
 
 // Trata o Token limpando espaços acidentais e quebras de linha
 const DISCORD_TOKEN = (process.env.DISCORD_TOKEN || '').trim();
-const CHANNEL_ID = "SEU_ID_DO_CANAL_AQUI"; // Certifique-se de colocar o ID do seu canal aqui!
+const CHANNEL_ID = "1531673006064275739"; // Certifique-se de colocar o ID do seu canal aqui!
 
 if (!DISCORD_TOKEN) {
   console.error("❌ ERRO CRÍTICO: A variável DISCORD_TOKEN não foi encontrada no ambiente!");
