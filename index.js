@@ -10,16 +10,35 @@ const {
 } = require('discord.js');
 const express = require('express');
 const cors = require('cors');
+const admin = require('firebase-admin');
 
-// 🌐 COLOQUE AQUI A URL BASE DO SEU SITE NO GITHUB PAGES:
+// 🌐 URL BASE DO SEU SITE NO GITHUB PAGES:
 const SITE_URL = 'https://eduardopython.github.io/recrutamento-albion';
 
+// ------------------------------------------------------------------
+// INICIALIZAÇÃO DO FIREBASE (FIRESTORE)
+// ------------------------------------------------------------------
+let serviceAccount;
+
+// Tenta carregar a chave do Firebase via variável de ambiente (Render) ou arquivo local (firebase-key.json)
+if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+} else {
+  serviceAccount = require('./firebase-key.json');
+}
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+const db = admin.firestore();
+
+// ------------------------------------------------------------------
+// CONFIGURAÇÃO DO SERVIDOR EXPRESS
+// ------------------------------------------------------------------
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-// Banco de dados em memória para armazenar o canal de cada guilda (guildId -> channelId)
-const recruitmentChannels = new Map();
 
 const client = new Client({
   intents: [
@@ -71,17 +90,33 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.commandName === 'setar-canal') {
       const channel = interaction.options.getChannel('canal');
       
-      recruitmentChannels.set(interaction.guildId, channel.id);
+      try {
+        // Salva ou atualiza a guilda permanentemente no Firebase
+        await db.collection('guilds').doc(interaction.guildId).set({
+          channelId: channel.id,
+          guildName: interaction.guild.name,
+          plan: 'free',
+          subscriptionActive: true,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
 
-      const generatedLink = `${SITE_URL}/?guild=${interaction.guildId}`;
+        const generatedLink = `${SITE_URL}/?guild=${interaction.guildId}`;
 
-      await interaction.reply({
-        content: `✅ **Canal de recrutamento configurado para:** ${channel.toString()}\n` +
-                 `🆔 **ID deste Servidor:** \`${interaction.guildId}\`\n\n` +
-                 `🔗 **Link exclusivo do formulário para esta guilda:**\n` +
-                 `${generatedLink}`,
-        ephemeral: true
-      });
+        await interaction.reply({
+          content: `✅ **Canal de recrutamento salvo no banco de dados!**\n` +
+                   `📍 **Canal:** ${channel.toString()}\n` +
+                   `🆔 **ID da Guilda:** \`${interaction.guildId}\`\n\n` +
+                   `🔗 **Link exclusivo do formulário para esta guilda:**\n` +
+                   `${generatedLink}`,
+          ephemeral: true
+        });
+      } catch (err) {
+        console.error('Erro ao salvar no Firebase:', err);
+        await interaction.reply({
+          content: '❌ Ocorreu um erro ao salvar as configurações no banco de dados.',
+          ephemeral: true
+        });
+      }
     }
     return;
   }
@@ -90,7 +125,6 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isButton()) {
     const { customId, guild, member } = interaction;
 
-    // Verificar permissão de quem clicou no botão
     if (!member.permissions.has(PermissionFlagsBits.ManageRoles) && !member.permissions.has(PermissionFlagsBits.Administrator)) {
       return interaction.reply({
         content: '❌ Você não tem permissão para gerenciar recrutamentos.',
@@ -100,12 +134,10 @@ client.on('interactionCreate', async (interaction) => {
 
     const [action, targetDiscordTag] = customId.split(':');
 
-    // Extrair dados da Embed original
     const embed = interaction.message.embeds[0];
     const rolesField = embed.fields.find(f => f.name === '🎯 Atividades de Interesse');
     const selectedRoles = rolesField ? rolesField.value.split(', ').map(r => r.trim()) : [];
 
-    // Tenta encontrar o membro no servidor pelo username/tag informado
     const members = await guild.members.fetch();
     const targetMember = members.find(m => 
       m.user.username.toLowerCase() === targetDiscordTag.toLowerCase() ||
@@ -126,7 +158,6 @@ client.on('interactionCreate', async (interaction) => {
       const assignedRoles = [];
       const missingRoles = [];
 
-      // Procura e atribui o cargo padrão "Membro" (se existir)
       const defaultRole = guild.roles.cache.find(r => cleanText(r.name) === 'membro');
       if (defaultRole) {
         try {
@@ -137,7 +168,6 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      // Procura e atribui os cargos das opções selecionadas no formulário
       for (const roleName of selectedRoles) {
         const role = guild.roles.cache.find(r => cleanText(r.name) === cleanText(roleName));
         if (role) {
@@ -152,7 +182,6 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      // Atualiza a mensagem no canal desativando os botões
       const updatedEmbed = EmbedBuilder.from(embed)
         .setColor(0x2ecc71)
         .setTitle('✅ Aplicação Aprovada')
@@ -193,19 +222,28 @@ app.post('/api/apply', async (req, res) => {
       return res.status(400).json({ error: 'ID da guilda não informado.' });
     }
 
-    const channelId = recruitmentChannels.get(guildId);
-    if (!channelId) {
+    // Busca as informações da guilda no Firebase Firestore
+    const guildDoc = await db.collection('guilds').doc(guildId).get();
+
+    if (!guildDoc.exists) {
       return res.status(400).json({ 
-        error: 'O canal de recrutamento deste servidor ainda não foi configurado com /setar-canal.' 
+        error: 'Esta guilda ainda não configurou o bot com o /setar-canal.' 
       });
     }
 
-    const channel = await client.channels.fetch(channelId);
+    const guildData = guildDoc.data();
+
+    // Verificação de segurança (Bloqueio se a assinatura/plano não estiver ativo)
+    if (guildData.subscriptionActive === false) {
+      return res.status(403).json({ error: 'A assinatura desta guilda está inativa.' });
+    }
+
+    const channel = await client.channels.fetch(guildData.channelId);
     if (!channel) {
       return res.status(404).json({ error: 'Canal de recrutamento não encontrado.' });
     }
 
-    // Montar a ficha bonita no Discord (Embed)
+    // Montar a ficha no Discord (Embed)
     const embed = new EmbedBuilder()
       .setTitle('⚔️ Nova Ficha de Recrutamento')
       .setColor(0xf1c40f)
@@ -241,13 +279,12 @@ app.post('/api/apply', async (req, res) => {
   }
 });
 
-// Endpoint de teste/health check
 app.get('/', (req, res) => {
-  res.send('Bot Recrutador Albion rodando perfeitamente!');
+  res.send('Bot Recrutador Albion rodando com suporte ao Firebase!');
 });
 
 // ------------------------------------------------------------------
-// 4. INICIALIZAÇÃO DO SERVIDOR E LOGIN DO BOT
+// 4. INICIALIZAÇÃO
 // ------------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
