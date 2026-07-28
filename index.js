@@ -12,8 +12,9 @@ const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
 
-// 🌐 URL BASE DO SEU SITE NO GITHUB PAGES:
+// 🌐 CONFIGURAÇÕES DO SAAS
 const SITE_URL = 'https://eduardopython.github.io/recrutamento-albion';
+const FREE_LIMIT = 15; // Limite de fichas mensais do plano gratuito
 
 // ------------------------------------------------------------------
 // INICIALIZAÇÃO DO FIREBASE (FIRESTORE)
@@ -21,10 +22,8 @@ const SITE_URL = 'https://eduardopython.github.io/recrutamento-albion';
 let serviceAccount;
 
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  // Se estiver rodando no Render, usa a Variável de Ambiente
   serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 } else {
-  // Se estiver rodando localmente no seu PC, tenta carregar o arquivo firebase-key.json
   try {
     serviceAccount = require('./firebase-key.json');
   } catch (e) {
@@ -96,14 +95,28 @@ client.on('interactionCreate', async (interaction) => {
       const channel = interaction.options.getChannel('canal');
       
       try {
-        // Salva ou atualiza a guilda permanentemente no Firebase
-        await db.collection('guilds').doc(interaction.guildId).set({
-          channelId: channel.id,
-          guildName: interaction.guild.name,
-          plan: 'free',
-          subscriptionActive: true,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
+        const guildRef = db.collection('guilds').doc(interaction.guildId);
+        const doc = await guildRef.get();
+
+        // Se a guilda ainda não existir no banco, inicia com os padrões
+        if (!doc.exists) {
+          await guildRef.set({
+            channelId: channel.id,
+            guildName: interaction.guild.name,
+            plan: 'free',
+            applicationsCount: 0,
+            lastResetMonth: new Date().getMonth(),
+            subscriptionActive: true,
+            createdAt: new Date().toISOString()
+          });
+        } else {
+          // Se já existir, só atualiza o canal e o nome
+          await guildRef.update({
+            channelId: channel.id,
+            guildName: interaction.guild.name,
+            updatedAt: new Date().toISOString()
+          });
+        }
 
         const generatedLink = `${SITE_URL}/?guild=${interaction.guildId}`;
 
@@ -227,8 +240,8 @@ app.post('/api/apply', async (req, res) => {
       return res.status(400).json({ error: 'ID da guilda não informado.' });
     }
 
-    // Busca as informações da guilda no Firebase Firestore
-    const guildDoc = await db.collection('guilds').doc(guildId).get();
+    const guildRef = db.collection('guilds').doc(guildId);
+    const guildDoc = await guildRef.get();
 
     if (!guildDoc.exists) {
       return res.status(400).json({ 
@@ -238,11 +251,32 @@ app.post('/api/apply', async (req, res) => {
 
     const guildData = guildDoc.data();
 
-    // Trava SaaS: Bloqueio caso a assinatura esteja cancelada
+    // 1. Trava de Assinatura Inativa
     if (guildData.subscriptionActive === false) {
       return res.status(403).json({ error: 'A assinatura desta guilda está inativa.' });
     }
 
+    // 2. Controle de Ciclo Mensal (Reseta a contagem se mudou o mês)
+    const currentMonth = new Date().getMonth();
+    let currentCount = guildData.applicationsCount || 0;
+
+    if (guildData.lastResetMonth !== currentMonth) {
+      currentCount = 0;
+      await guildRef.update({
+        applicationsCount: 0,
+        lastResetMonth: currentMonth
+      });
+    }
+
+    // 3. Trava do Plano Freemium
+    const isFreePlan = (guildData.plan || 'free') === 'free';
+    if (isFreePlan && currentCount >= FREE_LIMIT) {
+      return res.status(402).json({ 
+        error: `Esta guilda atingiu o limite mensal de ${FREE_LIMIT} recrutamentos do Plano Gratuito. Peça aos líderes para assinarem o Plano PRO!` 
+      });
+    }
+
+    // 4. Buscar canal no Discord
     const channel = await client.channels.fetch(guildData.channelId);
     if (!channel) {
       return res.status(404).json({ error: 'Canal de recrutamento não encontrado.' });
@@ -259,6 +293,7 @@ app.post('/api/apply', async (req, res) => {
         { name: '⭐ Spec da Arma', value: String(weaponSpec || 0), inline: true },
         { name: '🎯 Atividades de Interesse', value: roles && roles.length > 0 ? roles.join(', ') : 'Nenhuma selecionada' }
       )
+      .setFooter({ text: `Fichas este mês: ${currentCount + 1}${isFreePlan ? `/${FREE_LIMIT}` : ' (Plano PRO)'}` })
       .setTimestamp();
 
     // Botões de Ação
@@ -277,6 +312,11 @@ app.post('/api/apply', async (req, res) => {
 
     await channel.send({ embeds: [embed], components: [row] });
 
+    // 5. Incrementa o contador de fichas no Firebase
+    await guildRef.update({
+      applicationsCount: admin.firestore.FieldValue.increment(1)
+    });
+
     return res.status(200).json({ message: 'Aplicação enviada com sucesso!' });
   } catch (error) {
     console.error('Erro ao processar aplicação:', error);
@@ -285,7 +325,7 @@ app.post('/api/apply', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.send('Bot Recrutador Albion rodando com suporte ao Firebase!');
+  res.send('Bot Recrutador SaaS rodando com sucesso!');
 });
 
 // ------------------------------------------------------------------
