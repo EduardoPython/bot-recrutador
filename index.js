@@ -70,31 +70,40 @@ function cleanText(text) {
 }
 
 // ------------------------------------------------------------------
-// 1. REGISTRO DOS COMANDOS SLASH
+// 1. REGISTRO DOS COMANDOS SLASH (REFORÇADO)
 // ------------------------------------------------------------------
 client.once('ready', async () => {
   console.log(`🤖 Bot conectado como ${client.user.tag}!`);
 
-  const setChannelCommand = new SlashCommandBuilder()
-    .setName('setar-canal')
-    .setDescription('Define o canal onde as fichas de recrutamento serão enviadas')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addChannelOption(option =>
-      option
-        .setName('canal')
-        .setDescription('O canal privado para os recrutadores')
-        .setRequired(true)
-    );
+  const commands = [
+    new SlashCommandBuilder()
+      .setName('setar-canal')
+      .setDescription('Define o canal onde as fichas de recrutamento serão enviadas')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .addChannelOption(option =>
+        option
+          .setName('canal')
+          .setDescription('O canal privado para os recrutadores')
+          .setRequired(true)
+      ),
 
-  const statusCommand = new SlashCommandBuilder()
-    .setName('status-plano')
-    .setDescription('Verifica o plano atual e o limite de recrutamentos da guilda')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+    new SlashCommandBuilder()
+      .setName('status-plano')
+      .setDescription('Verifica o plano atual e o limite de recrutamentos da guilda')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  ];
 
   try {
-    await client.application.commands.create(setChannelCommand);
-    await client.application.commands.create(statusCommand);
-    console.log('✅ Comandos registrados com sucesso no Discord!');
+    // Registra os comandos diretamente em todas as guildas para aparecer instantaneamente
+    const guilds = await client.guilds.fetch();
+    for (const [guildId] of guilds) {
+      await client.application.commands.set(commands, guildId);
+      console.log(`✅ Comandos registrados na guilda: ${guildId}`);
+    }
+    
+    // Atualiza o registro global por garantia
+    await client.application.commands.set(commands);
+    console.log('✅ Comandos globais atualizados!');
   } catch (error) {
     console.error('❌ Erro ao registrar comandos slash:', error);
   }
@@ -379,7 +388,7 @@ app.post('/api/create-pix', async (req, res) => {
         payer: {
           email: email || 'cliente@recrutadoralbion.com'
         },
-        external_reference: guildId // Guarda o ID da guilda para o Webhook saber quem pagou
+        external_reference: guildId
       }
     });
 
@@ -397,7 +406,7 @@ app.post('/api/create-pix', async (req, res) => {
   }
 });
 
-// Webhook que o Mercado Pago chama automaticamente após o pagamento
+// Webhook acionado pelo Mercado Pago após o pagamento
 app.post('/api/webhook', async (req, res) => {
   try {
     const { type, data } = req.body;
@@ -409,7 +418,6 @@ app.post('/api/webhook', async (req, res) => {
         const guildId = paymentInfo.external_reference;
 
         if (guildId) {
-          // Atualiza a guilda para PRO no Firebase automaticamente
           await db.collection('guilds').doc(guildId).set({
             plan: 'pro',
             subscriptionActive: true,
