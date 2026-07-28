@@ -30,8 +30,6 @@ app.post('/api/apply', async (req, res) => {
     if (!channel) return res.status(500).json({ error: 'Canal não encontrado no Discord.' });
 
     const rolesList = Array.isArray(roles) ? roles.join(', ') : (roles || 'Nenhum');
-    
-    // Remove o @ se o usuário tiver digitado, mantendo letras, números, pontos e underline
     const cleanTag = (discordTag || '').trim().replace(/^@/, '');
 
     const embed = new EmbedBuilder()
@@ -81,20 +79,15 @@ client.on('interactionCreate', async (interaction) => {
     const guild = interaction.guild;
 
     try {
-      // 1. Força a busca e download de TODOS os membros do servidor para o cache
+      // 1. Atualiza membros no cache
       const members = await guild.members.fetch();
 
-      // 2. BUSCA MULTI-CRITÉRIO
+      // 2. Busca o jogador
       let member = 
-        // A) Busca por ID numérico exato
         members.get(searchString) ||
-        // B) Busca por Username exato (o login em minúsculas)
         members.find(m => m.user.username.toLowerCase() === searchString) ||
-        // C) Busca por Display Name exato
         members.find(m => m.user.displayName.toLowerCase() === searchString) ||
-        // D) Busca por Apelido dentro do Servidor exato
         members.find(m => m.nickname && m.nickname.toLowerCase() === searchString) ||
-        // E) Busca parcial (contém o texto digitado)
         members.find(m => 
           m.user.username.toLowerCase().includes(searchString) ||
           m.user.displayName.toLowerCase().includes(searchString) ||
@@ -103,28 +96,44 @@ client.on('interactionCreate', async (interaction) => {
 
       if (!member) {
         return interaction.editReply({ 
-          content: `⚠️ Não encontrei o usuário **"${rawDiscordTag}"** no servidor.\n\n` +
-                   `**Possíveis causas:**\n` +
-                   `1. A pessoa precisa ter entrado neste servidor do Discord.\n` +
-                   `2. Ela precisa digitar o **Username de Login do Discord** (ex: \`eduardopython\`) ou o **ID do Perfil**.`
+          content: `⚠️ Não encontrei o usuário **"${rawDiscordTag}"** no servidor.`
         });
       }
 
-      // Adiciona os cargos dos checkboxes
-      const rolesToAddNames = rolesString.split(', ').filter(Boolean);
+      // 3. Força o download atualizado de TODOS os cargos do servidor
+      await guild.roles.fetch();
+
+      const rolesToAddNames = rolesString.split(', ').map(r => r.trim()).filter(Boolean);
+      let addedRoles = [];
+      let missingRoles = [];
+
       for (const roleName of rolesToAddNames) {
         const role = guild.roles.cache.find(r => r.name.toLowerCase() === roleName.toLowerCase());
-        if (role) await member.roles.add(role);
+        if (role) {
+          await member.roles.add(role);
+          addedRoles.push(role.name);
+        } else {
+          missingRoles.push(roleName);
+        }
       }
 
-      // Adiciona o cargo padrão 'membro' (se existir)
+      // Adiciona o cargo padrão 'membro' se existir
       const defaultRole = guild.roles.cache.find(r => r.name.toLowerCase() === 'membro');
-      if (defaultRole) await member.roles.add(defaultRole);
+      if (defaultRole) {
+        await member.roles.add(defaultRole);
+        addedRoles.push(defaultRole.name);
+      }
 
-      await interaction.editReply({ content: `✅ Cargos entregues com sucesso para <@${member.id}>!` });
+      let responseMsg = `✅ **Sucesso!** Cargos entregues para <@${member.id}>:\n👉 ${addedRoles.length > 0 ? addedRoles.join(', ') : 'Nenhum cargo encontrado'}`;
+      
+      if (missingRoles.length > 0) {
+        responseMsg += `\n\n⚠️ **Atenção:** Os seguintes cargos não existem no servidor com este nome exato: *${missingRoles.join(', ')}*`;
+      }
+
+      await interaction.editReply({ content: responseMsg });
 
       await interaction.message.edit({
-        content: `✅ **APROVADO!** O jogador <@${member.id}> foi aprovado por <@${interaction.user.id}> e recebeu os cargos automaticamente!`,
+        content: `✅ **APROVADO!** O jogador <@${member.id}> foi aprovado por <@${interaction.user.id}>!`,
         embeds: interaction.message.embeds,
         components: []
       });
@@ -132,7 +141,7 @@ client.on('interactionCreate', async (interaction) => {
     } catch (err) {
       console.error('Erro ao adicionar cargos:', err);
       await interaction.editReply({ 
-        content: '❌ Erro ao atribuir cargos. Verifique nas Configurações do Discord se o cargo do Bot está POSICIONADO ACIMA dos cargos que ele precisa entregar.'
+        content: '❌ **Erro de Permissão do Discord!**\nVerifique se o cargo do **bot-recrutador** está no TOPO da lista de cargos em *Configurações do Servidor > Cargos*.'
       });
     }
   }
