@@ -1,234 +1,257 @@
-const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, MessageFlags, REST, Routes, SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+const { 
+  Client, 
+  GatewayIntentBits, 
+  SlashCommandBuilder, 
+  PermissionFlagsBits, 
+  ActionRowBuilder, 
+  ButtonBuilder, 
+  ButtonStyle, 
+  EmbedBuilder 
+} = require('discord.js');
 const express = require('express');
 const cors = require('cors');
 
+// 🌐 COLOQUE AQUI A URL BASE DO SEU SITE NO GITHUB PAGES:
+const SITE_URL = 'https://seu-usuario.github.io/seu-repositorio';
+
 const app = express();
-app.use(express.json());
 app.use(cors());
+app.use(express.json());
 
-const DISCORD_TOKEN = (process.env.DISCORD_TOKEN || '').trim();
-
-if (!DISCORD_TOKEN) {
-  console.error("❌ ERRO CRÍTICO: A variável DISCORD_TOKEN não foi configurada!");
-}
-
-// Memória temporária para guardar o canal configurado de cada guilda (Guild ID -> Channel ID)
-const guildChannels = new Map();
+// Banco de dados em memória para armazenar o canal de cada guilda (guildId -> channelId)
+const recruitmentChannels = new Map();
 
 const client = new Client({
   intents: [
-    GatewayIntentBits.Guilds, 
+    GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers
   ]
 });
 
-// Comando Slash /setar-canal
-const commands = [
-  new SlashCommandBuilder()
+// Função auxiliar para padronizar nomes de cargos
+function cleanText(text) {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+// ------------------------------------------------------------------
+// 1. REGISTRO DO COMANDO SLASH
+// ------------------------------------------------------------------
+client.once('ready', async () => {
+  console.log(`🤖 Bot conectado como ${client.user.tag}!`);
+
+  const setChannelCommand = new SlashCommandBuilder()
     .setName('setar-canal')
     .setDescription('Define o canal onde as fichas de recrutamento serão enviadas')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addChannelOption(option => 
-      option.setName('canal')
-        .setDescription('Selecione o canal privado de recrutamento')
+    .addChannelOption(option =>
+      option
+        .setName('canal')
+        .setDescription('O canal privado para os recrutadores')
         .setRequired(true)
-    )
-];
-
-client.once('ready', async () => {
-  console.log(`🤖 Bot conectado como ${client.user.tag}`);
-  
-  // Registra o comando /setar-canal globalmente para todos os servidores
-  try {
-    const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
-    await rest.put(
-      Routes.applicationCommands(client.user.id),
-      { body: commands }
     );
-    console.log('✅ Comando /setar-canal registrado no Discord!');
+
+  try {
+    await client.application.commands.create(setChannelCommand);
+    console.log('✅ Comando /setar-canal registrado com sucesso no Discord!');
   } catch (error) {
-    console.error('Erro ao registrar comando slash:', error);
+    console.error('❌ Erro ao registrar comando slash:', error);
   }
 });
 
-// Manipula a execução do comando /setar-canal
+// ------------------------------------------------------------------
+// 2. MANIPULAÇÃO DE INTERAÇÕES (COMANDOS E BOTÕES)
+// ------------------------------------------------------------------
 client.on('interactionCreate', async (interaction) => {
+  // Trata o Comando /setar-canal
   if (interaction.isChatInputCommand()) {
     if (interaction.commandName === 'setar-canal') {
       const channel = interaction.options.getChannel('canal');
       
-      guildChannels.set(interaction.guildId, channel.id);
+      recruitmentChannels.set(interaction.guildId, channel.id);
+
+      const generatedLink = `${SITE_URL}/?guild=${interaction.guildId}`;
 
       await interaction.reply({
-        content: `✅ Canal de recrutamento configurado para ${channel}!\n**ID deste Servidor:** \`${interaction.guildId}\``,
-        flags: MessageFlags.Ephemeral
+        content: `✅ **Canal de recrutamento configurado para:** ${channel.toString()}\n` +
+                 `🆔 **ID deste Servidor:** \`${interaction.guildId}\`\n\n` +
+                 `🔗 **Link exclusivo do formulário para esta guilda:**\n` +
+                 `${generatedLink}`,
+        ephemeral: true
+      });
+    }
+    return;
+  }
+
+  // Trata o clique nos Botões (Aprovar / Recusar)
+  if (interaction.isButton()) {
+    const { customId, guild, member } = interaction;
+
+    // Verificar permissão de quem clicou no botão
+    if (!member.permissions.has(PermissionFlagsBits.ManageRoles) && !member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({
+        content: '❌ Você não tem permissão para gerenciar recrutamentos.',
+        ephemeral: true
+      });
+    }
+
+    const [action, targetDiscordTag] = customId.split(':');
+
+    // Extrair dados da Embed original
+    const embed = interaction.message.embeds[0];
+    const rolesField = embed.fields.find(f => f.name === '🎯 Atividades de Interesse');
+    const selectedRoles = rolesField ? rolesField.value.split(', ').map(r => r.trim()) : [];
+
+    // Tenta encontrar o membro no servidor pelo username/tag informado
+    const members = await guild.members.fetch();
+    const targetMember = members.find(m => 
+      m.user.username.toLowerCase() === targetDiscordTag.toLowerCase() ||
+      m.user.tag.toLowerCase() === targetDiscordTag.toLowerCase() ||
+      m.id === targetDiscordTag
+    );
+
+    if (action === 'approve') {
+      if (!targetMember) {
+        return interaction.reply({
+          content: `⚠️ Não foi possível encontrar o usuário **${targetDiscordTag}** no servidor para atribuir os cargos automaticamente. A ficha foi aprovada, mas atribua os cargos manualmente.`,
+          ephemeral: true
+        });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+
+      const assignedRoles = [];
+      const missingRoles = [];
+
+      // Procura e atribui o cargo padrão "Membro" (se existir)
+      const defaultRole = guild.roles.cache.find(r => cleanText(r.name) === 'membro');
+      if (defaultRole) {
+        try {
+          await targetMember.roles.add(defaultRole);
+          assignedRoles.push(defaultRole.name);
+        } catch (e) {
+          console.error(`Erro ao dar o cargo padrão ${defaultRole.name}:`, e);
+        }
+      }
+
+      // Procura e atribui os cargos das opções selecionadas no formulário
+      for (const roleName of selectedRoles) {
+        const role = guild.roles.cache.find(r => cleanText(r.name) === cleanText(roleName));
+        if (role) {
+          try {
+            await targetMember.roles.add(role);
+            assignedRoles.push(role.name);
+          } catch (e) {
+            console.error(`Erro ao dar o cargo ${roleName}:`, e);
+          }
+        } else {
+          missingRoles.push(roleName);
+        }
+      }
+
+      // Atualiza a mensagem no canal desativando os botões
+      const updatedEmbed = EmbedBuilder.from(embed)
+        .setColor(0x2ecc71)
+        .setTitle('✅ Aplicação Aprovada')
+        .setFooter({ text: `Aprovado por: ${interaction.user.tag}` });
+
+      await interaction.message.edit({ embeds: [updatedEmbed], components: [] });
+
+      let responseText = `✅ **${targetMember.user.tag}** foi aprovado com sucesso!`;
+      if (assignedRoles.length > 0) responseText += `\nCargos entregues: **${assignedRoles.join(', ')}**`;
+      if (missingRoles.length > 0) responseText += `\n⚠️ Cargos não encontrados no servidor: ${missingRoles.join(', ')}`;
+
+      await interaction.editReply({ content: responseText });
+
+    } else if (action === 'reject') {
+      const updatedEmbed = EmbedBuilder.from(embed)
+        .setColor(0xe74c3c)
+        .setTitle('❌ Aplicação Recusada')
+        .setFooter({ text: `Recusado por: ${interaction.user.tag}` });
+
+      await interaction.message.edit({ embeds: [updatedEmbed], components: [] });
+
+      await interaction.reply({
+        content: `❌ A aplicação de **${targetDiscordTag}** foi recusada.`,
+        ephemeral: true
       });
     }
   }
 });
 
-// Função para limpar textos de cargos
-function cleanText(str) {
-  return str.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
-}
-
-// Rota de recebimento do formulário do site
+// ------------------------------------------------------------------
+// 3. ENDPOINT DA API HTTP (RECEBE O FORMULÁRIO DO SITE)
+// ------------------------------------------------------------------
 app.post('/api/apply', async (req, res) => {
   try {
     const { gameNick, discordTag, roles, mainWeapon, weaponSpec, guildId } = req.body;
 
     if (!guildId) {
-      return res.status(400).json({ error: 'ID do servidor (guildId) não fornecido.' });
+      return res.status(400).json({ error: 'ID da guilda não informado.' });
     }
 
-    const channelId = guildChannels.get(guildId);
-
-    const targetGuild = await client.guilds.fetch(guildId).catch(() => null);
-    if (!targetGuild) {
-      return res.status(404).json({ error: 'O bot não está presente neste servidor do Discord.' });
-    }
-
+    const channelId = recruitmentChannels.get(guildId);
     if (!channelId) {
-      return res.status(400).json({ error: 'O canal de recrutamento deste servidor ainda não foi configurado com /setar-canal.' });
+      return res.status(400).json({ 
+        error: 'O canal de recrutamento deste servidor ainda não foi configurado com /setar-canal.' 
+      });
     }
 
-    const channel = await client.channels.fetch(channelId).catch(() => null);
-    if (!channel) return res.status(500).json({ error: 'Canal configurado não encontrado no Discord.' });
+    const channel = await client.channels.fetch(channelId);
+    if (!channel) {
+      return res.status(404).json({ error: 'Canal de recrutamento não encontrado.' });
+    }
 
-    const rolesArray = Array.isArray(roles) ? roles : (roles ? [roles] : []);
-    const rolesListText = rolesArray.length > 0 ? rolesArray.join(', ') : 'Nenhum';
-    const cleanTag = (discordTag || '').trim().replace(/^@/, '');
-    const compactRoles = rolesArray.join('|');
-
+    // Montar a ficha bonita no Discord (Embed)
     const embed = new EmbedBuilder()
-      .setTitle(`🛡️ Nova Aplicação: ${gameNick}`)
-      .setColor(0xD4AF37)
+      .setTitle('⚔️ Nova Ficha de Recrutamento')
+      .setColor(0xf1c40f)
       .addFields(
-        { name: '👤 Nick no Jogo', value: gameNick || 'Não informado', inline: true },
-        { name: '💬 Discord Informado', value: `${cleanTag}`, inline: true },
-        { name: '⚔️ Arma & Spec', value: `${mainWeapon} (${weaponSpec})`, inline: false },
-        { name: '🏷️ Cargos Solicitados', value: rolesListText, inline: false }
+        { name: '👤 Nick no Albion', value: gameNick || 'Não informado', inline: true },
+        { name: '💬 Discord', value: discordTag || 'Não informado', inline: true },
+        { name: '🗡️ Arma Principal', value: mainWeapon || 'Não informada', inline: true },
+        { name: '⭐ Spec da Arma', value: String(weaponSpec || 0), inline: true },
+        { name: '🎯 Atividades de Interesse', value: roles && roles.length > 0 ? roles.join(', ') : 'Nenhuma selecionada' }
       )
-      .setFooter({ text: 'Apenas admins: escolha uma opção abaixo.' })
       .setTimestamp();
 
+    // Botões de Ação
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId(`approve_${encodeURIComponent(cleanTag)}_${encodeURIComponent(compactRoles)}`)
-        .setLabel('✅ Aprovar & Dar Cargos')
-        .setStyle(ButtonStyle.Success),
+        .setCustomId(`approve:${discordTag}`)
+        .setLabel('Aprovar & Dar Cargos')
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('✅'),
       new ButtonBuilder()
-        .setCustomId(`reject_${encodeURIComponent(cleanTag)}`)
-        .setLabel('❌ Recusar')
+        .setCustomId(`reject:${discordTag}`)
+        .setLabel('Recusar')
         .setStyle(ButtonStyle.Danger)
+        .setEmoji('❌')
     );
 
     await channel.send({ embeds: [embed], components: [row] });
-    return res.status(200).json({ success: true, message: 'Aplicação enviada com sucesso!' });
 
+    return res.status(200).json({ message: 'Aplicação enviada com sucesso!' });
   } catch (error) {
-    console.error('Erro ao processar requisição:', error);
-    return res.status(500).json({ error: 'Erro interno no servidor do bot.' });
+    console.error('Erro ao processar aplicação:', error);
+    return res.status(500).json({ error: 'Erro interno no servidor ao processar aplicação.' });
   }
 });
 
-// Tratamento dos Botões Aprovar/Recusar
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isButton()) return;
-
-  const parts = interaction.customId.split('_');
-  const action = parts[0];
-  const rawDiscordTag = decodeURIComponent(parts[1] || '');
-  const searchString = rawDiscordTag.toLowerCase().trim();
-
-  if (action === 'approve') {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-    const rawRoles = decodeURIComponent(parts[2] || '');
-    const rolesRequested = rawRoles ? rawRoles.split('|').filter(Boolean) : [];
-    const guild = interaction.guild;
-
-    try {
-      const members = await guild.members.fetch();
-
-      let member = 
-        members.get(searchString) ||
-        members.find(m => m.user.username.toLowerCase() === searchString) ||
-        members.find(m => m.user.displayName.toLowerCase() === searchString) ||
-        members.find(m => m.nickname && m.nickname.toLowerCase() === searchString) ||
-        members.find(m => 
-          m.user.username.toLowerCase().includes(searchString) ||
-          m.user.displayName.toLowerCase().includes(searchString) ||
-          (m.nickname && m.nickname.toLowerCase().includes(searchString))
-        );
-
-      if (!member) {
-        return interaction.editReply({ 
-          content: `⚠️ Não encontrei o usuário **"${rawDiscordTag}"** no servidor.`
-        });
-      }
-
-      await guild.roles.fetch();
-
-      let addedRoles = [];
-      let missingRoles = [];
-
-      for (const roleReq of rolesRequested) {
-        const cleanReq = cleanText(roleReq);
-        const role = guild.roles.cache.find(r => cleanText(r.name) === cleanReq || cleanText(r.name).includes(cleanReq));
-        
-        if (role) {
-          await member.roles.add(role);
-          addedRoles.push(role.name);
-        } else {
-          missingRoles.push(roleReq);
-        }
-      }
-
-      const defaultRole = guild.roles.cache.find(r => cleanText(r.name) === 'membro');
-      if (defaultRole) {
-        await member.roles.add(defaultRole);
-        if (!addedRoles.includes(defaultRole.name)) {
-          addedRoles.push(defaultRole.name);
-        }
-      }
-
-      let responseMsg = `✅ **Sucesso!** Cargos entregues para <@${member.id}>:\n👉 ${addedRoles.length > 0 ? addedRoles.join(', ') : 'Nenhum cargo adicionado'}`;
-      
-      if (missingRoles.length > 0) {
-        responseMsg += `\n\n⚠️ **Não encontrados no servidor:** ${missingRoles.join(', ')}`;
-      }
-
-      await interaction.editReply({ content: responseMsg });
-
-      await interaction.message.edit({
-        content: `✅ **APROVADO!** O jogador <@${member.id}> foi aprovado por <@${interaction.user.id}>!`,
-        embeds: interaction.message.embeds,
-        components: []
-      });
-
-    } catch (err) {
-      console.error('Erro ao adicionar cargos:', err);
-      await interaction.editReply({ 
-        content: '❌ **Erro ao atribuir cargos!**\nVerifique se o cargo do Bot está no **TOPO da lista** em *Configurações do Servidor > Cargos*.'
-      });
-    }
-  }
-
-  if (action === 'reject') {
-    await interaction.update({
-      content: `❌ **RECUSADO.** Aplicação rejeitada por <@${interaction.user.id}>.`,
-      embeds: interaction.message.embeds,
-      components: []
-    });
-  }
+// Endpoint de teste/health check
+app.get('/', (req, res) => {
+  res.send('Bot Recrutador Albion rodando perfeitamente!');
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
+// ------------------------------------------------------------------
+// 4. INICIALIZAÇÃO DO SERVIDOR E LOGIN DO BOT
+// ------------------------------------------------------------------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor Web rodando na porta ${PORT}`);
+});
 
-if (DISCORD_TOKEN) {
-  client.login(DISCORD_TOKEN).catch(err => {
-    console.error("❌ Erro ao conectar ao Discord:", err.message);
-  });
-}
+client.login(process.env.DISCORD_TOKEN);
