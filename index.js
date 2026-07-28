@@ -31,15 +31,15 @@ app.post('/api/apply', async (req, res) => {
 
     const rolesList = Array.isArray(roles) ? roles.join(', ') : (roles || 'Nenhum');
     
-    // Limpa completamente qualquer @, espaço ou símbolo do ID/Username
-    const cleanTag = (discordTag || '').replace(/[^a-zA-Z0-9_.]/g, '').trim();
+    // Remove o @ se o usuário tiver digitado, mantendo letras, números, pontos e underline
+    const cleanTag = (discordTag || '').trim().replace(/^@/, '');
 
     const embed = new EmbedBuilder()
       .setTitle(`🛡️ Nova Aplicação: ${gameNick}`)
       .setColor(0xD4AF37)
       .addFields(
         { name: '👤 Nick no Jogo', value: gameNick || 'Não informado', inline: true },
-        { name: '💬 Discord Informado', value: `<@${cleanTag}> (${cleanTag})`, inline: true },
+        { name: '💬 Discord Informado', value: `${cleanTag}`, inline: true },
         { name: '⚔️ Arma & Spec', value: `${mainWeapon} (${weaponSpec})`, inline: false },
         { name: '🏷️ Cargos Solicitados', value: rolesList, inline: false }
       )
@@ -48,11 +48,11 @@ app.post('/api/apply', async (req, res) => {
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId(`approve_${cleanTag}_${encodeURIComponent(rolesList)}`)
+        .setCustomId(`approve_${encodeURIComponent(cleanTag)}_${encodeURIComponent(rolesList)}`)
         .setLabel('✅ Aprovar & Dar Cargos')
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
-        .setCustomId(`reject_${cleanTag}`)
+        .setCustomId(`reject_${encodeURIComponent(cleanTag)}`)
         .setLabel('❌ Recusar')
         .setStyle(ButtonStyle.Danger)
     );
@@ -71,7 +71,8 @@ client.on('interactionCreate', async (interaction) => {
 
   const parts = interaction.customId.split('_');
   const action = parts[0];
-  const cleanTag = (parts[1] || '').trim().toLowerCase();
+  const rawDiscordTag = decodeURIComponent(parts[1] || '');
+  const searchString = rawDiscordTag.toLowerCase().trim();
 
   if (action === 'approve') {
     await interaction.deferReply({ ephemeral: true });
@@ -80,31 +81,43 @@ client.on('interactionCreate', async (interaction) => {
     const guild = interaction.guild;
 
     try {
-      // Força a atualização da lista de membros do servidor
+      // 1. Força a busca e download de TODOS os membros do servidor para o cache
       const members = await guild.members.fetch();
 
-      // Busca por ID exato, Username exato ou Apelido no servidor
-      let member = members.get(cleanTag) || members.find(m => 
-        m.id === cleanTag ||
-        m.user.username.toLowerCase() === cleanTag || 
-        (m.nickname && m.nickname.toLowerCase() === cleanTag) ||
-        m.user.displayName.toLowerCase() === cleanTag
-      );
+      // 2. BUSCA MULTI-CRITÉRIO
+      let member = 
+        // A) Busca por ID numérico exato
+        members.get(searchString) ||
+        // B) Busca por Username exato (o login em minúsculas)
+        members.find(m => m.user.username.toLowerCase() === searchString) ||
+        // C) Busca por Display Name exato
+        members.find(m => m.user.displayName.toLowerCase() === searchString) ||
+        // D) Busca por Apelido dentro do Servidor exato
+        members.find(m => m.nickname && m.nickname.toLowerCase() === searchString) ||
+        // E) Busca parcial (contém o texto digitado)
+        members.find(m => 
+          m.user.username.toLowerCase().includes(searchString) ||
+          m.user.displayName.toLowerCase().includes(searchString) ||
+          (m.nickname && m.nickname.toLowerCase().includes(searchString))
+        );
 
       if (!member) {
         return interaction.editReply({ 
-          content: `⚠️ Não encontrei o membro com ID/User **"${cleanTag}"** no servidor. Verifique se ele já entrou no Discord da guilda!`
+          content: `⚠️ Não encontrei o usuário **"${rawDiscordTag}"** no servidor.\n\n` +
+                   `**Possíveis causas:**\n` +
+                   `1. A pessoa precisa ter entrado neste servidor do Discord.\n` +
+                   `2. Ela precisa digitar o **Username de Login do Discord** (ex: \`eduardopython\`) ou o **ID do Perfil**.`
         });
       }
 
-      // Atribui os cargos dos checkboxes
+      // Adiciona os cargos dos checkboxes
       const rolesToAddNames = rolesString.split(', ').filter(Boolean);
       for (const roleName of rolesToAddNames) {
         const role = guild.roles.cache.find(r => r.name.toLowerCase() === roleName.toLowerCase());
         if (role) await member.roles.add(role);
       }
 
-      // Atribui o cargo padrão 'membro' (se existir)
+      // Adiciona o cargo padrão 'membro' (se existir)
       const defaultRole = guild.roles.cache.find(r => r.name.toLowerCase() === 'membro');
       if (defaultRole) await member.roles.add(defaultRole);
 
@@ -119,7 +132,7 @@ client.on('interactionCreate', async (interaction) => {
     } catch (err) {
       console.error('Erro ao adicionar cargos:', err);
       await interaction.editReply({ 
-        content: '❌ Erro ao atribuir cargos. Verifique nas Configurações do Discord se o cargo do Bot está POSICIONADO ACIMA dos cargos que ele precisa dar.'
+        content: '❌ Erro ao atribuir cargos. Verifique nas Configurações do Discord se o cargo do Bot está POSICIONADO ACIMA dos cargos que ele precisa entregar.'
       });
     }
   }
