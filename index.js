@@ -12,7 +12,7 @@ const express = require('express');
 const cors = require('cors');
 
 // 🌐 COLOQUE AQUI A URL BASE DO SEU SITE NO GITHUB PAGES:
-const SITE_URL = 'https://eduardopython.github.io/recrutamento-albion/';
+const SITE_URL = 'https://eduardopython.github.io/recrutamento-albion';
 
 const app = express();
 app.use(cors());
