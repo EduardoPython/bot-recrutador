@@ -6,10 +6,10 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Trata o token e pega das variáveis de ambiente
+// Token do Bot vindo das variáveis de ambiente na Render
 const DISCORD_TOKEN = (process.env.DISCORD_TOKEN || '').trim();
 
-// COLE O ID DO SEU CANAL ENTRE AS ASPAS ABAIXO:
+// COLE O ID DO SEU CANAL ENTRE AS ASPAS:
 const CHANNEL_ID = "1531673006064275739"; 
 
 if (!DISCORD_TOKEN) {
@@ -38,7 +38,7 @@ app.post('/api/apply', async (req, res) => {
       .setColor(0xD4AF37)
       .addFields(
         { name: '👤 Nick no Jogo', value: gameNick || 'Não informado', inline: true },
-        { name: '💬 Discord', value: `@${discordTag.replace('@', '')}`, inline: true },
+        { name: '💬 Discord Tag', value: `@${discordTag.replace('@', '')}`, inline: true },
         { name: '⚔️ Arma & Spec', value: `${mainWeapon} (${weaponSpec})`, inline: false },
         { name: '🏷️ Cargos Solicitados', value: rolesList, inline: false }
       )
@@ -65,29 +65,37 @@ app.post('/api/apply', async (req, res) => {
   }
 });
 
-// Resposta aos botões no Discord
+// Resposta aos botões no Discord (Aprovar / Recusar)
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
 
   const parts = interaction.customId.split('_');
   const action = parts[0];
   const rawDiscordTag = parts[1];
-  const cleanTag = rawDiscordTag.replace('@', '').toLowerCase();
+  const cleanTag = rawDiscordTag.replace('@', '').trim().toLowerCase();
 
   if (action === 'approve') {
+    await interaction.deferReply({ ephemeral: true });
+
     const rolesString = decodeURIComponent(parts[2] || '');
     const guild = interaction.guild;
 
-    const member = guild.members.cache.find(m => m.user.username.toLowerCase() === cleanTag);
-
-    if (!member) {
-      return interaction.reply({ 
-        content: `⚠️ Não encontrei o usuário **@${cleanTag}** no servidor. Ele precisa ter entrado no Discord da guilda!`, 
-        ephemeral: true 
-      });
-    }
-
     try {
+      // Busca atualizada para garantir que encontra o usuário no servidor
+      const members = await guild.members.fetch();
+
+      const member = members.find(m => 
+        m.user.username.toLowerCase() === cleanTag || 
+        (m.nickname && m.nickname.toLowerCase() === cleanTag) ||
+        m.displayName.toLowerCase() === cleanTag
+      );
+
+      if (!member) {
+        return interaction.editReply({ 
+          content: `⚠️ Não encontrei o usuário **${cleanTag}** no servidor.\n\n*Certifique-se de que a pessoa digitou o Username exato do Discord e que já entrou no servidor!*`
+        });
+      }
+
       const rolesToAddNames = rolesString.split(', ').filter(Boolean);
       
       for (const roleName of rolesToAddNames) {
@@ -95,10 +103,13 @@ client.on('interactionCreate', async (interaction) => {
         if (role) await member.roles.add(role);
       }
 
+      // Adiciona o cargo 'membro' se existir
       const defaultRole = guild.roles.cache.find(r => r.name.toLowerCase() === 'membro');
       if (defaultRole) await member.roles.add(defaultRole);
 
-      await interaction.update({
+      await interaction.editReply({ content: '✅ Cargos atribuídos com sucesso!' });
+
+      await interaction.message.edit({
         content: `✅ **APROVADO!** O jogador <@${member.id}> foi aprovado por <@${interaction.user.id}> e recebeu os cargos automaticamente!`,
         embeds: interaction.message.embeds,
         components: []
@@ -106,9 +117,8 @@ client.on('interactionCreate', async (interaction) => {
 
     } catch (err) {
       console.error('Erro ao adicionar cargos:', err);
-      await interaction.reply({ 
-        content: '❌ Erro ao atribuir cargos. Verifique a hierarquia de cargos do Bot.', 
-        ephemeral: true 
+      await interaction.editReply({ 
+        content: '❌ Erro ao atribuir cargos. Verifique se o cargo do Bot está no TOPO da lista de cargos nas configurações do servidor.'
       });
     }
   }
