@@ -20,11 +20,16 @@ const SITE_URL = 'https://eduardopython.github.io/recrutamento-albion';
 // ------------------------------------------------------------------
 let serviceAccount;
 
-// Tenta carregar a chave do Firebase via variável de ambiente (Render) ou arquivo local (firebase-key.json)
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+  // Se estiver rodando no Render, usa a Variável de Ambiente
   serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 } else {
-  serviceAccount = require('./firebase-key.json');
+  // Se estiver rodando localmente no seu PC, tenta carregar o arquivo firebase-key.json
+  try {
+    serviceAccount = require('./firebase-key.json');
+  } catch (e) {
+    console.error("❌ Nem a variável FIREBASE_SERVICE_ACCOUNT nem o arquivo firebase-key.json foram encontrados.");
+  }
 }
 
 admin.initializeApp({
@@ -233,7 +238,7 @@ app.post('/api/apply', async (req, res) => {
 
     const guildData = guildDoc.data();
 
-    // Verificação de segurança (Bloqueio se a assinatura/plano não estiver ativo)
+    // Trava SaaS: Bloqueio caso a assinatura esteja cancelada
     if (guildData.subscriptionActive === false) {
       return res.status(403).json({ error: 'A assinatura desta guilda está inativa.' });
     }
