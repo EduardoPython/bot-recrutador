@@ -6,7 +6,8 @@ const {
   ActionRowBuilder, 
   ButtonBuilder, 
   ButtonStyle, 
-  EmbedBuilder 
+  EmbedBuilder,
+  AttachmentBuilder
 } = require('discord.js');
 const express = require('express');
 const cors = require('cors');
@@ -90,6 +91,11 @@ client.once('ready', async () => {
     new SlashCommandBuilder()
       .setName('status-plano')
       .setDescription('Verifica o plano atual e o limite de recrutamentos da guilda')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+    new SlashCommandBuilder()
+      .setName('assinar')
+      .setDescription('Gera o QR Code Pix para assinar o Plano PRO da guilda')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   ];
 
@@ -115,7 +121,6 @@ client.on('interactionCreate', async (interaction) => {
     
     // Comando /setar-canal
     if (interaction.commandName === 'setar-canal') {
-      // Previne o erro "A aplicação não respondeu" estendendo o tempo de resposta
       await interaction.deferReply({ ephemeral: true });
 
       const channel = interaction.options.getChannel('canal');
@@ -190,6 +195,71 @@ client.on('interactionCreate', async (interaction) => {
       } catch (err) {
         console.error('Erro ao buscar status:', err);
         await interaction.editReply({ content: '❌ Erro ao consultar status do plano.' });
+      }
+      return;
+    }
+
+    // Comando /assinar
+    if (interaction.commandName === 'assinar') {
+      await interaction.deferReply({ ephemeral: true });
+
+      try {
+        const guildDoc = await db.collection('guilds').doc(interaction.guildId).get();
+        if (!guildDoc.exists) {
+          return interaction.editReply({
+            content: '⚠️ Configure a guilda com `/setar-canal` antes de assinar.'
+          });
+        }
+
+        const data = guildDoc.data();
+        if (data.plan === 'pro') {
+          return interaction.editReply({
+            content: '⭐ Sua guilda já possui o **Plano PRO** ativo com fichas ilimitadas!'
+          });
+        }
+
+        // Gera a cobrança Pix no Mercado Pago
+        const response = await payment.create({
+          body: {
+            transaction_amount: PRO_PLAN_PRICE,
+            description: `Plano PRO - Guilda ${interaction.guild.name}`,
+            payment_method_id: 'pix',
+            payer: {
+              email: 'cliente@recrutadoralbion.com'
+            },
+            external_reference: interaction.guildId
+          }
+        });
+
+        const qrCodeText = response.point_of_interaction.transaction_data.qr_code;
+        const qrCodeBase64 = response.point_of_interaction.transaction_data.qr_code_base64;
+
+        // Converte o QR Code base64 para anexo do Discord
+        const buffer = Buffer.from(qrCodeBase64, 'base64');
+        const attachment = new AttachmentBuilder(buffer, { name: 'qrcode.png' });
+
+        const embed = new EmbedBuilder()
+          .setTitle('💎 Assinatura Plano PRO - Bot Recrutador')
+          .setDescription(`Escaneie o QR Code abaixo ou copie a chave Pix para ativar recrutamentos **ILIMITADOS** para a guilda **${interaction.guild.name}**.`)
+          .setColor(0x2ecc71)
+          .addFields(
+            { name: '💰 Valor', value: `R$ ${PRO_PLAN_PRICE.toFixed(2).replace('.', ',')} / mês`, inline: true },
+            { name: '⏳ Validade do Pix', value: '30 Minutos', inline: true },
+            { name: '📋 Pix Copia e Cola', value: `\`\`\`\n${qrCodeText}\n\`\`\`` }
+          )
+          .setImage('attachment://qrcode.png')
+          .setFooter({ text: 'A aprovação é instantânea assim que o pagamento for realizado no banco!' });
+
+        await interaction.editReply({
+          embeds: [embed],
+          files: [attachment]
+        });
+
+      } catch (err) {
+        console.error('Erro ao gerar Pix no Discord:', err);
+        await interaction.editReply({
+          content: '❌ Ocorreu um erro ao gerar o Pix. Tente novamente em alguns instantes.'
+        });
       }
       return;
     }
@@ -321,7 +391,7 @@ app.post('/api/apply', async (req, res) => {
     const isFreePlan = (guildData.plan || 'free') === 'free';
     if (isFreePlan && currentCount >= FREE_LIMIT) {
       return res.status(402).json({ 
-        error: `Esta guilda atingiu o limite mensal de ${FREE_LIMIT} recrutamentos do Plano Gratuito. Peça aos líderes para assinarem o Plano PRO!` 
+        error: `Esta guilda atingiu o limite mensal de ${FREE_LIMIT} recrutamentos do Plano Gratuito. Peça aos líderes para usarem o comando /assinar no Discord!` 
       });
     }
 
@@ -373,7 +443,7 @@ app.post('/api/apply', async (req, res) => {
 // 4. ROTAS DE PAGAMENTO AUTOMÁTICO (MERCADO PAGO)
 // ------------------------------------------------------------------
 
-// Gera a cobrança Pix para assinar o Plano PRO
+// Gera a cobrança Pix via API
 app.post('/api/create-pix', async (req, res) => {
   try {
     const { guildId, email } = req.body;
