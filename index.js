@@ -70,7 +70,7 @@ function cleanText(text) {
 }
 
 // ------------------------------------------------------------------
-// 1. REGISTRO DOS COMANDOS SLASH (REFORÇADO)
+// 1. REGISTRO DOS COMANDOS SLASH
 // ------------------------------------------------------------------
 client.once('ready', async () => {
   console.log(`🤖 Bot conectado como ${client.user.tag}!`);
@@ -94,14 +94,12 @@ client.once('ready', async () => {
   ];
 
   try {
-    // Registra os comandos diretamente em todas as guildas para aparecer instantaneamente
     const guilds = await client.guilds.fetch();
     for (const [guildId] of guilds) {
       await client.application.commands.set(commands, guildId);
       console.log(`✅ Comandos registrados na guilda: ${guildId}`);
     }
     
-    // Atualiza o registro global por garantia
     await client.application.commands.set(commands);
     console.log('✅ Comandos globais atualizados!');
   } catch (error) {
@@ -114,8 +112,12 @@ client.once('ready', async () => {
 // ------------------------------------------------------------------
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isChatInputCommand()) {
+    
     // Comando /setar-canal
     if (interaction.commandName === 'setar-canal') {
+      // Previne o erro "A aplicação não respondeu" estendendo o tempo de resposta
+      await interaction.deferReply({ ephemeral: true });
+
       const channel = interaction.options.getChannel('canal');
       
       try {
@@ -142,32 +144,32 @@ client.on('interactionCreate', async (interaction) => {
 
         const generatedLink = `${SITE_URL}/?guild=${interaction.guildId}`;
 
-        await interaction.reply({
+        await interaction.editReply({
           content: `✅ **Canal de recrutamento salvo no banco de dados!**\n` +
                    `📍 **Canal:** ${channel.toString()}\n` +
                    `🆔 **ID da Guilda:** \`${interaction.guildId}\`\n\n` +
                    `🔗 **Link exclusivo do formulário:**\n` +
-                   `${generatedLink}`,
-          ephemeral: true
+                   `${generatedLink}`
         });
       } catch (err) {
         console.error('Erro ao salvar no Firebase:', err);
-        await interaction.reply({
-          content: '❌ Ocorreu um erro ao salvar as configurações no banco de dados.',
-          ephemeral: true
+        await interaction.editReply({
+          content: '❌ Ocorreu um erro ao salvar as configurações no banco de dados.'
         });
       }
+      return;
     }
 
     // Comando /status-plano
     if (interaction.commandName === 'status-plano') {
+      await interaction.deferReply({ ephemeral: true });
+
       try {
         const guildDoc = await db.collection('guilds').doc(interaction.guildId).get();
         
         if (!guildDoc.exists) {
-          return interaction.reply({
-            content: '⚠️ Esta guilda ainda não foi configurada. Use `/setar-canal` primeiro.',
-            ephemeral: true
+          return interaction.editReply({
+            content: '⚠️ Esta guilda ainda não foi configurada. Use `/setar-canal` primeiro.'
           });
         }
 
@@ -184,13 +186,13 @@ client.on('interactionCreate', async (interaction) => {
           )
           .setTimestamp();
 
-        await interaction.reply({ embeds: [embed], ephemeral: true });
+        await interaction.editReply({ embeds: [embed] });
       } catch (err) {
         console.error('Erro ao buscar status:', err);
-        await interaction.reply({ content: '❌ Erro ao consultar status do plano.', ephemeral: true });
+        await interaction.editReply({ content: '❌ Erro ao consultar status do plano.' });
       }
+      return;
     }
-    return;
   }
 
   // Trata Botões de Aprovação/Recusa
@@ -397,8 +399,8 @@ app.post('/api/create-pix', async (req, res) => {
 
     return res.status(200).json({
       paymentId: response.id,
-      qrCode: qrCode,             // Chave Pix Copia e Cola
-      qrCodeBase64: qrCodeBase64  // Imagem do QR Code
+      qrCode: qrCode,
+      qrCodeBase64: qrCodeBase64
     });
   } catch (error) {
     console.error('Erro ao gerar Pix:', error);
