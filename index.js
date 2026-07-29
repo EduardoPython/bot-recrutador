@@ -57,14 +57,14 @@ app.use(cors());
 
 // Middleware seguro para capturar JSON e Form-Data sem estourar Erro 400
 app.use((req, res, next) => {
-  express.json()(req, res, (err) => {
-    if (err) req.body = {}; // Se falhar ao parsear JSON, define como objeto vazio em vez de retornar 400
+  express.json({ limit: '10mb' })(req, res, (err) => {
+    if (err) req.body = {}; 
     next();
   });
 });
 
 app.use((req, res, next) => {
-  express.urlencoded({ extended: true })(req, res, (err) => {
+  express.urlencoded({ extended: true, limit: '10mb' })(req, res, (err) => {
     if (err) req.body = req.body || {};
     next();
   });
@@ -195,7 +195,7 @@ client.on('interactionCreate', async (interaction) => {
           .setTitle(`📊 Status da Guilda - ${interaction.guild.name}`)
           .setColor(isPro ? 0x2ecc71 : 0xf1c40f)
           .addFields(
-            { name: '💎 Plano Atual', value: isPro ? '⭐ **PRO (Ilimitado)**' : '🆓 **Gratuito**', inline: true },
+            { name: '💎 Plano', value: isPro ? '⭐ **PRO (Ilimitado)**' : '🆓 **Gratuito**', inline: true },
             { name: '📋 Fichas no Mês', value: isPro ? `${count} (Sem limite)` : `${count}/${FREE_LIMIT}`, inline: true }
           )
           .setTimestamp();
@@ -251,11 +251,11 @@ client.on('interactionCreate', async (interaction) => {
           .setColor(0x2ecc71)
           .addFields(
             { name: '💰 Valor', value: `R$ ${PRO_PLAN_PRICE.toFixed(2).replace('.', ',')} / mês`, inline: true },
-            { name: '⏳ Validade do Pix', value: '30 Minutos', inline: true },
+            { name: '⏳ Validade', value: '30 Minutos', inline: true },
             { name: '📋 Pix Copia e Cola', value: `\`\`\`\n${qrCodeText}\n\`\`\`` }
           )
           .setImage('attachment://qrcode.png')
-          .setFooter({ text: 'A aprovação é instantânea assim que o pagamento for realizado no banco!' });
+          .setFooter({ text: 'A aprovação é instantânea após o pagamento!' });
 
         await interaction.editReply({
           embeds: [embed],
@@ -287,8 +287,6 @@ client.on('interactionCreate', async (interaction) => {
 
     const [action, targetIdentifier] = customId.split(':');
     const embed = interaction.message.embeds[0];
-    const rolesField = embed.fields ? embed.fields.find(f => f.name === '🎯 Atividades de Interesse') : null;
-    const selectedRoles = rolesField ? rolesField.value.split(', ').map(r => r.trim()) : [];
 
     const members = await guild.members.fetch().catch(() => null);
     const targetMember = members ? members.find(m => 
@@ -301,40 +299,64 @@ client.on('interactionCreate', async (interaction) => {
       if (!targetMember) {
         const updatedEmbed = EmbedBuilder.from(embed)
           .setColor(0x2ecc71)
-          .setTitle('✅ Aplicação Aprovada (Sem Cargos Automáticos)')
+          .setTitle('✅ Aplicação Aprovada (Membro não encontrado)')
           .setFooter({ text: `Aprovado por: ${interaction.user.tag}` });
 
         await interaction.message.edit({ embeds: [updatedEmbed], components: [] });
-
-        return interaction.editReply({
-          content: `⚠️ A ficha foi aprovada, mas o membro **${targetIdentifier}** não foi encontrado no servidor para receber os cargos.`
-        });
+        return interaction.editReply({ content: `⚠️ A ficha foi aprovada, mas o membro não foi encontrado no servidor.` });
       }
 
       const assignedRoles = [];
-      const missingRoles = [];
 
-      const defaultRole = guild.roles.cache.find(r => cleanText(r.name) === 'membro');
+      // 1. Atribui ou cria automaticamente o cargo padrão "Membro"
+      let defaultRole = guild.roles.cache.find(r => cleanText(r.name) === 'membro');
+      if (!defaultRole) {
+        try {
+          defaultRole = await guild.roles.create({
+            name: 'Membro',
+            color: 0x3498db,
+            reason: 'Criado automaticamente pelo Bot Recrutador'
+          });
+        } catch (e) {
+          console.error('Erro ao criar cargo padrão:', e);
+        }
+      }
+
       if (defaultRole) {
         try {
           await targetMember.roles.add(defaultRole);
           assignedRoles.push(defaultRole.name);
         } catch (e) {
-          console.error(`Erro ao dar cargo padrão:`, e);
+          console.error('Erro ao dar cargo padrão:', e);
         }
       }
 
-      for (const roleName of selectedRoles) {
-        const role = guild.roles.cache.find(r => cleanText(r.name) === cleanText(roleName));
-        if (role) {
+      // 2. Pega a arma digitada no formulário e cria o cargo dela se não existir
+      const weaponField = embed.fields ? embed.fields.find(f => f.name.includes('Arma Principal')) : null;
+      const weaponName = weaponField ? weaponField.value.trim() : null;
+
+      if (weaponName && weaponName !== 'Não informada') {
+        let weaponRole = guild.roles.cache.find(r => cleanText(r.name) === cleanText(weaponName));
+        
+        if (!weaponRole) {
           try {
-            await targetMember.roles.add(role);
-            assignedRoles.push(role.name);
+            weaponRole = await guild.roles.create({
+              name: weaponName,
+              color: 0x9b59b6,
+              reason: 'Cargo de arma digitado pelo usuário criado automaticamente'
+            });
           } catch (e) {
-            console.error(`Erro ao dar cargo ${roleName}:`, e);
+            console.error(`Erro ao criar o cargo da arma ${weaponName}:`, e);
           }
-        } else {
-          missingRoles.push(roleName);
+        }
+
+        if (weaponRole) {
+          try {
+            await targetMember.roles.add(weaponRole);
+            assignedRoles.push(weaponRole.name);
+          } catch (e) {
+            console.error(`Erro ao dar o cargo de arma ${weaponName}:`, e);
+          }
         }
       }
 
@@ -345,11 +367,9 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.message.edit({ embeds: [updatedEmbed], components: [] });
 
-      let responseText = `✅ **${targetMember.user.tag}** foi aprovado com sucesso!`;
-      if (assignedRoles.length > 0) responseText += `\nCargos entregues: **${assignedRoles.join(', ')}**`;
-      if (missingRoles.length > 0) responseText += `\n⚠️ Cargos não encontrados no servidor: ${missingRoles.join(', ')}`;
-
-      await interaction.editReply({ content: responseText });
+      await interaction.editReply({
+        content: `✅ **${targetMember.user.tag}** foi aprovado com sucesso!\nCargos entregues: **${assignedRoles.join(', ')}**`
+      });
 
     } else if (action === 'reject') {
       const updatedEmbed = EmbedBuilder.from(embed)
@@ -372,7 +392,7 @@ client.on('interactionCreate', async (interaction) => {
 
 app.post('/api/apply', async (req, res) => {
   try {
-    const { gameNick, discordTag, discordUserId, roles, mainWeapon, weaponSpec, guildId } = req.body || {};
+    const { gameNick, discordTag, discordUserId, mainWeapon, isNewbie, guildId, statsImageBase64 } = req.body || {};
 
     if (!guildId) {
       return res.status(400).json({ error: 'ID da guilda não informado.' });
@@ -402,7 +422,7 @@ app.post('/api/apply', async (req, res) => {
     const isFreePlan = (guildData.plan || 'free') === 'free';
     if (isFreePlan && currentCount >= FREE_LIMIT) {
       return res.status(402).json({ 
-        error: `Esta guilda atingiu o limite mensal de ${FREE_LIMIT} recrutamentos do Plano Gratuito. Peça aos líderes para usarem o comando /assinar no Discord!` 
+        error: `Esta guilda atingiu o limite mensal de ${FREE_LIMIT} recrutamentos do Plano Gratuito. Use /assinar no Discord!` 
       });
     }
 
@@ -412,6 +432,7 @@ app.post('/api/apply', async (req, res) => {
     }
 
     const buttonTarget = discordUserId || discordTag;
+    const newbieStatus = (isNewbie === true || isNewbie === 'true' || isNewbie === 'on') ? '🌱 Sim (Novato)' : '⚔️ Não (Veterano)';
 
     const embed = new EmbedBuilder()
       .setTitle('⚔️ Nova Ficha de Recrutamento')
@@ -420,11 +441,19 @@ app.post('/api/apply', async (req, res) => {
         { name: '👤 Nick no Albion', value: gameNick || 'Não informado', inline: true },
         { name: '💬 Discord', value: discordTag ? (discordUserId ? `<@${discordUserId}> (${discordTag})` : discordTag) : 'Não informado', inline: true },
         { name: '🗡️ Arma Principal', value: mainWeapon || 'Não informada', inline: true },
-        { name: '⭐ Spec da Arma', value: String(weaponSpec || 0), inline: true },
-        { name: '🎯 Atividades de Interesse', value: roles && roles.length > 0 ? roles.join(', ') : 'Nenhuma selecionada' }
+        { name: '📋 Status', value: newbieStatus, inline: true }
       )
       .setFooter({ text: `Fichas este mês: ${currentCount + 1}${isFreePlan ? `/${FREE_LIMIT}` : ' (Plano PRO)'}` })
       .setTimestamp();
+
+    let filesArray = [];
+    if (statsImageBase64) {
+      const base64Data = statsImageBase64.replace(/^data:image\/\w+;base64,/, '');
+      const buffer = Buffer.from(base64Data, 'base64');
+      const attachment = new AttachmentBuilder(buffer, { name: 'status.png' });
+      embed.setImage('attachment://status.png');
+      filesArray.push(attachment);
+    }
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
@@ -439,7 +468,7 @@ app.post('/api/apply', async (req, res) => {
         .setEmoji('❌')
     );
 
-    await channel.send({ embeds: [embed], components: [row] });
+    await channel.send({ embeds: [embed], components: [row], files: filesArray });
 
     await guildRef.update({
       applicationsCount: admin.firestore.FieldValue.increment(1)
@@ -569,7 +598,7 @@ app.get('/', (req, res) => {
   res.send('Bot Recrutador SaaS + Mercado Pago rodando com sucesso!');
 });
 
-// Tratamento final de erro para garantir que NADA responda 400
+// Tratamento final de erro para garantir estabilidade
 app.use((err, req, res, next) => {
   return res.status(200).send('OK');
 });
