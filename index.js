@@ -50,22 +50,24 @@ admin.initializeApp({
 const db = admin.firestore();
 
 // ------------------------------------------------------------------
-// CONFIGURAÇÃO DO SERVIDOR EXPRESS
+// CONFIGURAÇÃO DO SERVIDOR EXPRESS (PARSER TOLERANTE A ERROS)
 // ------------------------------------------------------------------
 const app = express();
 app.use(cors());
 
-// Parsers tolerantes a qualquer payload (evita erro 400 no middleware)
-app.use(express.json({ strict: false }));
-app.use(express.urlencoded({ extended: true }));
-app.use(express.text({ type: '*/*' }));
+// Middleware seguro para capturar JSON e Form-Data sem estourar Erro 400
+app.use((req, res, next) => {
+  express.json()(req, res, (err) => {
+    if (err) req.body = {}; // Se falhar ao parsear JSON, define como objeto vazio em vez de retornar 400
+    next();
+  });
+});
 
-// Middleware para evitar que erros de parse lancem HTTP 400
-app.use((err, req, res, next) => {
-  if (err) {
-    return res.status(200).send('OK');
-  }
-  next();
+app.use((req, res, next) => {
+  express.urlencoded({ extended: true })(req, res, (err) => {
+    if (err) req.body = req.body || {};
+    next();
+  });
 });
 
 const client = new Client({
@@ -370,12 +372,7 @@ client.on('interactionCreate', async (interaction) => {
 
 app.post('/api/apply', async (req, res) => {
   try {
-    let body = req.body;
-    if (typeof body === 'string') {
-      try { body = JSON.parse(body); } catch(e) {}
-    }
-
-    const { gameNick, discordTag, discordUserId, roles, mainWeapon, weaponSpec, guildId } = body || {};
+    const { gameNick, discordTag, discordUserId, roles, mainWeapon, weaponSpec, guildId } = req.body || {};
 
     if (!guildId) {
       return res.status(400).json({ error: 'ID da guilda não informado.' });
@@ -461,12 +458,7 @@ app.post('/api/apply', async (req, res) => {
 
 app.post('/api/create-pix', async (req, res) => {
   try {
-    let body = req.body;
-    if (typeof body === 'string') {
-      try { body = JSON.parse(body); } catch(e) {}
-    }
-
-    const { guildId, email } = body || {};
+    const { guildId, email } = req.body || {};
 
     if (!guildId) {
       return res.status(400).json({ error: 'ID da guilda é obrigatório.' });
@@ -495,7 +487,6 @@ app.post('/api/create-pix', async (req, res) => {
   }
 });
 
-// Auxiliar para ativar a guilda no banco e mandar aviso no Discord
 async function activateGuildPro(guildId) {
   if (!guildId) return;
 
@@ -537,17 +528,13 @@ async function activateGuildPro(guildId) {
   }
 }
 
-// ROTA DO WEBHOOK UNIFICADA (Responde 200 para qualquer chamada do Mercado Pago)
+// Handler universal do Webhook
 const handleWebhook = async (req, res) => {
   try {
-    let bodyData = req.body;
-    if (typeof bodyData === 'string') {
-      try { bodyData = JSON.parse(bodyData); } catch (e) { bodyData = {}; }
-    }
-
-    const type = bodyData?.type || req.query?.type || req.query?.topic;
-    const paymentId = bodyData?.data?.id || req.query?.id || req.query?.['data.id'];
-    const action = bodyData?.action;
+    const bodyData = req.body || {};
+    const type = bodyData.type || req.query?.type || req.query?.topic;
+    const paymentId = bodyData.data?.id || req.query?.id || req.query?.['data.id'];
+    const action = bodyData.action;
 
     if ((type === 'payment' || type === 'collection') && paymentId) {
       try {
@@ -556,11 +543,11 @@ const handleWebhook = async (req, res) => {
           await activateGuildPro(paymentInfo.external_reference);
         }
       } catch (err) {
-        console.log(`Aviso Webhook: Consulta do ID ${paymentId} ignorada.`);
+        console.log(`Webhook: Consulta do ID ${paymentId} ignorada.`);
       }
     }
 
-    if ((type === 'order' || action === 'order.processed') && bodyData?.data) {
+    if ((type === 'order' || action === 'order.processed') && bodyData.data) {
       const status = bodyData.data.status;
       const statusDetail = bodyData.data.status_detail;
       const guildId = bodyData.data.external_reference;
@@ -576,11 +563,15 @@ const handleWebhook = async (req, res) => {
   }
 };
 
-app.get('/api/webhook', handleWebhook);
-app.post('/api/webhook', handleWebhook);
+app.all('/api/webhook', handleWebhook);
 
 app.get('/', (req, res) => {
   res.send('Bot Recrutador SaaS + Mercado Pago rodando com sucesso!');
+});
+
+// Tratamento final de erro para garantir que NADA responda 400
+app.use((err, req, res, next) => {
+  return res.status(200).send('OK');
 });
 
 // ------------------------------------------------------------------
