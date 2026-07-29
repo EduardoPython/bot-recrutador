@@ -16,8 +16,8 @@ const { MercadoPagoConfig, Payment } = require('mercadopago');
 
 // 🌐 CONFIGURAÇÕES DO SAAS
 const SITE_URL = 'https://eduardopython.github.io/recrutamento-albion';
-const FREE_LIMIT = 15; // Limite de fichas mensais do plano gratuito
-const PRO_PLAN_PRICE = 19.90; // Valor da assinatura mensal em R$
+const FREE_LIMIT = 15;
+const PRO_PLAN_PRICE = 19.90;
 
 // ------------------------------------------------------------------
 // INICIALIZAÇÃO DO MERCADO PAGO
@@ -100,12 +100,7 @@ client.once('ready', async () => {
   ];
 
   try {
-    const guilds = await client.guilds.fetch();
-    for (const [guildId] of guilds) {
-      await client.application.commands.set(commands, guildId);
-      console.log(`✅ Comandos registrados na guilda: ${guildId}`);
-    }
-    
+    // Registra globalmente (evita Rate Limits)
     await client.application.commands.set(commands);
     console.log('✅ Comandos globais atualizados!');
   } catch (error) {
@@ -218,7 +213,6 @@ client.on('interactionCreate', async (interaction) => {
           });
         }
 
-        // Gera a cobrança Pix no Mercado Pago
         const response = await payment.create({
           body: {
             transaction_amount: PRO_PLAN_PRICE,
@@ -234,7 +228,6 @@ client.on('interactionCreate', async (interaction) => {
         const qrCodeText = response.point_of_interaction.transaction_data.qr_code;
         const qrCodeBase64 = response.point_of_interaction.transaction_data.qr_code_base64;
 
-        // Converte o QR Code base64 para anexo do Discord
         const buffer = Buffer.from(qrCodeBase64, 'base64');
         const attachment = new AttachmentBuilder(buffer, { name: 'qrcode.png' });
 
@@ -276,41 +269,45 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
-    const [action, targetDiscordTag] = customId.split(':');
+    await interaction.deferReply({ ephemeral: true });
+
+    const [action, targetUserId] = customId.split(':');
     const embed = interaction.message.embeds[0];
     const rolesField = embed.fields.find(f => f.name === '🎯 Atividades de Interesse');
     const selectedRoles = rolesField ? rolesField.value.split(', ').map(r => r.trim()) : [];
 
-    const members = await guild.members.fetch();
-    const targetMember = members.find(m => 
-      m.user.username.toLowerCase() === targetDiscordTag.toLowerCase() ||
-      m.user.tag.toLowerCase() === targetDiscordTag.toLowerCase() ||
-      m.id === targetDiscordTag
-    );
+    // Busca membro diretamente pelo ID (eficiente e sem erros de nome)
+    const targetMember = await guild.members.fetch(targetUserId).catch(() => null);
 
     if (action === 'approve') {
       if (!targetMember) {
-        return interaction.reply({
-          content: `⚠️ Não foi possível encontrar **${targetDiscordTag}** no servidor. A ficha foi aprovada, mas atribua os cargos manualmente.`,
-          ephemeral: true
+        const updatedEmbed = EmbedBuilder.from(embed)
+          .setColor(0x2ecc71)
+          .setTitle('✅ Aplicação Aprovada (Sem Cargos Automáticos)')
+          .setFooter({ text: `Aprovado por: ${interaction.user.tag}` });
+
+        await interaction.message.edit({ embeds: [updatedEmbed], components: [] });
+
+        return interaction.editReply({
+          content: `⚠️ A ficha foi aprovada, mas o usuário não foi encontrado no servidor para receber os cargos.`
         });
       }
-
-      await interaction.deferReply({ ephemeral: true });
 
       const assignedRoles = [];
       const missingRoles = [];
 
+      // Cargo padrão 'Membro'
       const defaultRole = guild.roles.cache.find(r => cleanText(r.name) === 'membro');
       if (defaultRole) {
         try {
           await targetMember.roles.add(defaultRole);
           assignedRoles.push(defaultRole.name);
         } catch (e) {
-          console.error(`Erro ao dar cargo padrão:`, e);
+          console.error(`Erro ao atribuir cargo padrão:`, e);
         }
       }
 
+      // Cargos por atividade selecionada
       for (const roleName of selectedRoles) {
         const role = guild.roles.cache.find(r => cleanText(r.name) === cleanText(roleName));
         if (role) {
@@ -318,7 +315,7 @@ client.on('interactionCreate', async (interaction) => {
             await targetMember.roles.add(role);
             assignedRoles.push(role.name);
           } catch (e) {
-            console.error(`Erro ao dar cargo ${roleName}:`, e);
+            console.error(`Erro ao atribuir cargo ${roleName}:`, e);
           }
         } else {
           missingRoles.push(roleName);
@@ -346,9 +343,8 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.message.edit({ embeds: [updatedEmbed], components: [] });
 
-      await interaction.reply({
-        content: `❌ A aplicação de **${targetDiscordTag}** foi recusada.`,
-        ephemeral: true
+      await interaction.editReply({
+        content: `❌ A aplicação do usuário foi recusada.`
       });
     }
   }
@@ -358,10 +354,9 @@ client.on('interactionCreate', async (interaction) => {
 // 3. ROTAS DA API HTTP
 // ------------------------------------------------------------------
 
-// Rota de envio do formulário de recrutamento
 app.post('/api/apply', async (req, res) => {
   try {
-    const { gameNick, discordTag, roles, mainWeapon, weaponSpec, guildId } = req.body;
+    const { gameNick, discordTag, discordUserId, roles, mainWeapon, weaponSpec, guildId } = req.body;
 
     if (!guildId) {
       return res.status(400).json({ error: 'ID da guilda não informado.' });
@@ -400,12 +395,15 @@ app.post('/api/apply', async (req, res) => {
       return res.status(404).json({ error: 'Canal de recrutamento não encontrado.' });
     }
 
+    // Passamos o ID do usuário no customId do botão
+    const buttonTarget = discordUserId || discordTag;
+
     const embed = new EmbedBuilder()
       .setTitle('⚔️ Nova Ficha de Recrutamento')
       .setColor(0xf1c40f)
       .addFields(
         { name: '👤 Nick no Albion', value: gameNick || 'Não informado', inline: true },
-        { name: '💬 Discord', value: discordTag || 'Não informado', inline: true },
+        { name: '💬 Discord', value: discordTag ? `<@${discordUserId}> (${discordTag})` : 'Não informado', inline: true },
         { name: '🗡️ Arma Principal', value: mainWeapon || 'Não informada', inline: true },
         { name: '⭐ Spec da Arma', value: String(weaponSpec || 0), inline: true },
         { name: '🎯 Atividades de Interesse', value: roles && roles.length > 0 ? roles.join(', ') : 'Nenhuma selecionada' }
@@ -415,12 +413,12 @@ app.post('/api/apply', async (req, res) => {
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId(`approve:${discordTag}`)
+        .setCustomId(`approve:${buttonTarget}`)
         .setLabel('Aprovar & Dar Cargos')
         .setStyle(ButtonStyle.Success)
         .setEmoji('✅'),
       new ButtonBuilder()
-        .setCustomId(`reject:${discordTag}`)
+        .setCustomId(`reject:${buttonTarget}`)
         .setLabel('Recusar')
         .setStyle(ButtonStyle.Danger)
         .setEmoji('❌')
@@ -443,7 +441,6 @@ app.post('/api/apply', async (req, res) => {
 // 4. ROTAS DE PAGAMENTO AUTOMÁTICO (MERCADO PAGO)
 // ------------------------------------------------------------------
 
-// Gera a cobrança Pix via API
 app.post('/api/create-pix', async (req, res) => {
   try {
     const { guildId, email } = req.body;
@@ -464,13 +461,10 @@ app.post('/api/create-pix', async (req, res) => {
       }
     });
 
-    const qrCode = response.point_of_interaction.transaction_data.qr_code;
-    const qrCodeBase64 = response.point_of_interaction.transaction_data.qr_code_base64;
-
     return res.status(200).json({
       paymentId: response.id,
-      qrCode: qrCode,
-      qrCodeBase64: qrCodeBase64
+      qrCode: response.point_of_interaction.transaction_data.qr_code,
+      qrCodeBase64: response.point_of_interaction.transaction_data.qr_code_base64
     });
   } catch (error) {
     console.error('Erro ao gerar Pix:', error);
@@ -478,12 +472,13 @@ app.post('/api/create-pix', async (req, res) => {
   }
 });
 
-// Webhook acionado pelo Mercado Pago após o pagamento
+// Webhook validado via SDK do Mercado Pago
 app.post('/api/webhook', async (req, res) => {
   try {
     const { type, data } = req.body;
 
     if (type === 'payment' && data && data.id) {
+      // Re-consulta a API do Mercado Pago para garantir a autenticidade do pagamento
       const paymentInfo = await payment.get({ id: data.id });
 
       if (paymentInfo.status === 'approved') {
