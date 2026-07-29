@@ -14,10 +14,10 @@ const cors = require('cors');
 const admin = require('firebase-admin');
 const { MercadoPagoConfig, Payment } = require('mercadopago');
 
-// 🌐 CONFIGURAÇÕES DO SAAS (Apontando diretamente para o form.html)
+// 🌐 CONFIGURAÇÕES DO SAAS
 const SITE_URL = 'https://eduardopython.github.io/recrutamento-albion/form.html';
 const FREE_LIMIT = 15; // Limite de fichas mensais do plano gratuito
-const PRO_PLAN_PRICE = 0.01; // Valor da assinatura mensal em R$
+const PRO_PLAN_PRICE = 19.90; // Valor da assinatura mensal em R$
 
 // ------------------------------------------------------------------
 // INICIALIZAÇÃO DO MERCADO PAGO
@@ -212,7 +212,6 @@ client.on('interactionCreate', async (interaction) => {
           });
         }
 
-        // Gera a cobrança Pix no Mercado Pago
         const response = await payment.create({
           body: {
             transaction_amount: PRO_PLAN_PRICE,
@@ -276,7 +275,6 @@ client.on('interactionCreate', async (interaction) => {
     const rolesField = embed.fields ? embed.fields.find(f => f.name === '🎯 Atividades de Interesse') : null;
     const selectedRoles = rolesField ? rolesField.value.split(', ').map(r => r.trim()) : [];
 
-    // Busca o membro no servidor por ID ou username
     const members = await guild.members.fetch().catch(() => null);
     const targetMember = members ? members.find(m => 
       m.id === targetIdentifier ||
@@ -301,7 +299,6 @@ client.on('interactionCreate', async (interaction) => {
       const assignedRoles = [];
       const missingRoles = [];
 
-      // Atribui cargo padrão 'Membro' se existir
       const defaultRole = guild.roles.cache.find(r => cleanText(r.name) === 'membro');
       if (defaultRole) {
         try {
@@ -312,7 +309,6 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      // Atribui cargos por atividades selecionadas
       for (const roleName of selectedRoles) {
         const role = guild.roles.cache.find(r => cleanText(r.name) === cleanText(roleName));
         if (role) {
@@ -359,7 +355,6 @@ client.on('interactionCreate', async (interaction) => {
 // 3. ROTAS DA API HTTP
 // ------------------------------------------------------------------
 
-// Rota para receber a ficha do formulário web
 app.post('/api/apply', async (req, res) => {
   try {
     const { gameNick, discordTag, discordUserId, roles, mainWeapon, weaponSpec, guildId } = req.body;
@@ -477,27 +472,69 @@ app.post('/api/create-pix', async (req, res) => {
   }
 });
 
-// Webhook acionado pelo Mercado Pago após o pagamento
+// Auxiliar para ativar a guilda no banco e mandar aviso no Discord
+async function activateGuildPro(guildId) {
+  if (!guildId) return;
+
+  const guildRef = db.collection('guilds').doc(guildId);
+  const guildDoc = await guildRef.get();
+
+  await guildRef.set({
+    plan: 'pro',
+    subscriptionActive: true,
+    applicationsCount: 0,
+    lastPaymentDate: new Date().toISOString()
+  }, { merge: true });
+
+  console.log(`🎉 Pagamento aprovado! Guilda ${guildId} atualizada para o Plano PRO.`);
+
+  if (guildDoc.exists) {
+    const guildData = guildDoc.data();
+    if (guildData.channelId) {
+      try {
+        const channel = await client.channels.fetch(guildData.channelId);
+        if (channel) {
+          const successEmbed = new EmbedBuilder()
+            .setTitle('🎉 Assinatura PRO Ativada com Sucesso!')
+            .setDescription('O pagamento foi confirmado! Sua guilda agora tem acesso ao **Plano PRO** com recrutamentos **ILIMITADOS**.')
+            .setColor(0x2ecc71)
+            .addFields(
+              { name: '💎 Plano', value: '⭐ **PRO (Ilimitado)**', inline: true },
+              { name: '💰 Status', value: '✅ **Pago / Ativo**', inline: true }
+            )
+            .setFooter({ text: 'Obrigado por apoiar o Bot Recrutador!' })
+            .setTimestamp();
+
+          await channel.send({ embeds: [successEmbed] });
+        }
+      } catch (discordErr) {
+        console.error('Erro ao enviar mensagem de confirmação no Discord:', discordErr);
+      }
+    }
+  }
+}
+
+// Webhook unificado do Mercado Pago
 app.post('/api/webhook', async (req, res) => {
   try {
-    const { type, data } = req.body;
+    const { type, action, data } = req.body;
 
+    // 1. Tratamento para notificações do tipo 'payment' (Checkout Pix/Cartão)
     if (type === 'payment' && data && data.id) {
       const paymentInfo = await payment.get({ id: data.id });
-
       if (paymentInfo.status === 'approved') {
-        const guildId = paymentInfo.external_reference;
+        await activateGuildPro(paymentInfo.external_reference);
+      }
+    }
 
-        if (guildId) {
-          await db.collection('guilds').doc(guildId).set({
-            plan: 'pro',
-            subscriptionActive: true,
-            applicationsCount: 0,
-            lastPaymentDate: new Date().toISOString()
-          }, { merge: true });
+    // 2. Tratamento para notificações do tipo 'order' (Mercado Pago Point / Order API)
+    if ((type === 'order' || action === 'order.processed') && data) {
+      const status = data.status;
+      const statusDetail = data.status_detail;
+      const guildId = data.external_reference;
 
-          console.log(`🎉 Pagamento aprovado! Guilda ${guildId} atualizada para o Plano PRO.`);
-        }
+      if ((status === 'processed' || status === 'approved') && (statusDetail === 'accredited' || !statusDetail)) {
+        await activateGuildPro(guildId);
       }
     }
 
