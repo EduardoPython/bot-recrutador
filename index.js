@@ -14,10 +14,10 @@ const cors = require('cors');
 const admin = require('firebase-admin');
 const { MercadoPagoConfig, Payment } = require('mercadopago');
 
-// 🌐 CONFIGURAÇÕES DO SAAS
-const SITE_URL = 'https://eduardopython.github.io/recrutamento-albion';
-const FREE_LIMIT = 15;
-const PRO_PLAN_PRICE = 19.90;
+// 🌐 CONFIGURAÇÕES DO SAAS (Apontando diretamente para o form.html)
+const SITE_URL = 'https://eduardopython.github.io/recrutamento-albion/form.html';
+const FREE_LIMIT = 15; // Limite de fichas mensais do plano gratuito
+const PRO_PLAN_PRICE = 19.90; // Valor da assinatura mensal em R$
 
 // ------------------------------------------------------------------
 // INICIALIZAÇÃO DO MERCADO PAGO
@@ -100,9 +100,8 @@ client.once('ready', async () => {
   ];
 
   try {
-    // Registra globalmente (evita Rate Limits)
     await client.application.commands.set(commands);
-    console.log('✅ Comandos globais atualizados!');
+    console.log('✅ Comandos globais atualizados com sucesso!');
   } catch (error) {
     console.error('❌ Erro ao registrar comandos slash:', error);
   }
@@ -142,7 +141,7 @@ client.on('interactionCreate', async (interaction) => {
           });
         }
 
-        const generatedLink = `${SITE_URL}/?guild=${interaction.guildId}`;
+        const generatedLink = `${SITE_URL}?guild=${interaction.guildId}`;
 
         await interaction.editReply({
           content: `✅ **Canal de recrutamento salvo no banco de dados!**\n` +
@@ -213,6 +212,7 @@ client.on('interactionCreate', async (interaction) => {
           });
         }
 
+        // Gera a cobrança Pix no Mercado Pago
         const response = await payment.create({
           body: {
             transaction_amount: PRO_PLAN_PRICE,
@@ -271,13 +271,18 @@ client.on('interactionCreate', async (interaction) => {
 
     await interaction.deferReply({ ephemeral: true });
 
-    const [action, targetUserId] = customId.split(':');
+    const [action, targetIdentifier] = customId.split(':');
     const embed = interaction.message.embeds[0];
-    const rolesField = embed.fields.find(f => f.name === '🎯 Atividades de Interesse');
+    const rolesField = embed.fields ? embed.fields.find(f => f.name === '🎯 Atividades de Interesse') : null;
     const selectedRoles = rolesField ? rolesField.value.split(', ').map(r => r.trim()) : [];
 
-    // Busca membro diretamente pelo ID (eficiente e sem erros de nome)
-    const targetMember = await guild.members.fetch(targetUserId).catch(() => null);
+    // Busca o membro no servidor por ID ou username
+    const members = await guild.members.fetch().catch(() => null);
+    const targetMember = members ? members.find(m => 
+      m.id === targetIdentifier ||
+      m.user.username.toLowerCase() === targetIdentifier.toLowerCase() ||
+      m.user.tag.toLowerCase() === targetIdentifier.toLowerCase()
+    ) : null;
 
     if (action === 'approve') {
       if (!targetMember) {
@@ -289,25 +294,25 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.message.edit({ embeds: [updatedEmbed], components: [] });
 
         return interaction.editReply({
-          content: `⚠️ A ficha foi aprovada, mas o usuário não foi encontrado no servidor para receber os cargos.`
+          content: `⚠️ A ficha foi aprovada, mas o membro **${targetIdentifier}** não foi encontrado no servidor para receber os cargos.`
         });
       }
 
       const assignedRoles = [];
       const missingRoles = [];
 
-      // Cargo padrão 'Membro'
+      // Atribui cargo padrão 'Membro' se existir
       const defaultRole = guild.roles.cache.find(r => cleanText(r.name) === 'membro');
       if (defaultRole) {
         try {
           await targetMember.roles.add(defaultRole);
           assignedRoles.push(defaultRole.name);
         } catch (e) {
-          console.error(`Erro ao atribuir cargo padrão:`, e);
+          console.error(`Erro ao dar cargo padrão:`, e);
         }
       }
 
-      // Cargos por atividade selecionada
+      // Atribui cargos por atividades selecionadas
       for (const roleName of selectedRoles) {
         const role = guild.roles.cache.find(r => cleanText(r.name) === cleanText(roleName));
         if (role) {
@@ -315,7 +320,7 @@ client.on('interactionCreate', async (interaction) => {
             await targetMember.roles.add(role);
             assignedRoles.push(role.name);
           } catch (e) {
-            console.error(`Erro ao atribuir cargo ${roleName}:`, e);
+            console.error(`Erro ao dar cargo ${roleName}:`, e);
           }
         } else {
           missingRoles.push(roleName);
@@ -344,7 +349,7 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.message.edit({ embeds: [updatedEmbed], components: [] });
 
       await interaction.editReply({
-        content: `❌ A aplicação do usuário foi recusada.`
+        content: `❌ A aplicação de **${targetIdentifier}** foi recusada.`
       });
     }
   }
@@ -354,6 +359,7 @@ client.on('interactionCreate', async (interaction) => {
 // 3. ROTAS DA API HTTP
 // ------------------------------------------------------------------
 
+// Rota para receber a ficha do formulário web
 app.post('/api/apply', async (req, res) => {
   try {
     const { gameNick, discordTag, discordUserId, roles, mainWeapon, weaponSpec, guildId } = req.body;
@@ -395,7 +401,6 @@ app.post('/api/apply', async (req, res) => {
       return res.status(404).json({ error: 'Canal de recrutamento não encontrado.' });
     }
 
-    // Passamos o ID do usuário no customId do botão
     const buttonTarget = discordUserId || discordTag;
 
     const embed = new EmbedBuilder()
@@ -403,7 +408,7 @@ app.post('/api/apply', async (req, res) => {
       .setColor(0xf1c40f)
       .addFields(
         { name: '👤 Nick no Albion', value: gameNick || 'Não informado', inline: true },
-        { name: '💬 Discord', value: discordTag ? `<@${discordUserId}> (${discordTag})` : 'Não informado', inline: true },
+        { name: '💬 Discord', value: discordTag ? (discordUserId ? `<@${discordUserId}> (${discordTag})` : discordTag) : 'Não informado', inline: true },
         { name: '🗡️ Arma Principal', value: mainWeapon || 'Não informada', inline: true },
         { name: '⭐ Spec da Arma', value: String(weaponSpec || 0), inline: true },
         { name: '🎯 Atividades de Interesse', value: roles && roles.length > 0 ? roles.join(', ') : 'Nenhuma selecionada' }
@@ -472,13 +477,12 @@ app.post('/api/create-pix', async (req, res) => {
   }
 });
 
-// Webhook validado via SDK do Mercado Pago
+// Webhook acionado pelo Mercado Pago após o pagamento
 app.post('/api/webhook', async (req, res) => {
   try {
     const { type, data } = req.body;
 
     if (type === 'payment' && data && data.id) {
-      // Re-consulta a API do Mercado Pago para garantir a autenticidade do pagamento
       const paymentInfo = await payment.get({ id: data.id });
 
       if (paymentInfo.status === 'approved') {
