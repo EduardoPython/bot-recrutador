@@ -7,7 +7,8 @@ const {
   ButtonBuilder, 
   ButtonStyle, 
   EmbedBuilder,
-  AttachmentBuilder
+  AttachmentBuilder,
+  MessageFlags // 👈 Adicione este item aqui!
 } = require('discord.js');
 const express = require('express');
 const cors = require('cors');
