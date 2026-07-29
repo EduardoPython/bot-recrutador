@@ -8,7 +8,7 @@ const {
   ButtonStyle, 
   EmbedBuilder,
   AttachmentBuilder,
-  MessageFlags // 👈 Adicione este item aqui!
+  MessageFlags
 } = require('discord.js');
 const express = require('express');
 const cors = require('cors');
@@ -18,7 +18,7 @@ const { MercadoPagoConfig, Payment } = require('mercadopago');
 // 🌐 CONFIGURAÇÕES DO SAAS
 const SITE_URL = 'https://eduardopython.github.io/recrutamento-albion/form.html';
 const FREE_LIMIT = 15; // Limite de fichas mensais do plano gratuito
-const PRO_PLAN_PRICE = 0.01; // Valor da assinatura mensal em R$
+const PRO_PLAN_PRICE = 19.90; // Valor da assinatura mensal em R$
 
 // ------------------------------------------------------------------
 // INICIALIZAÇÃO DO MERCADO PAGO
@@ -116,7 +116,7 @@ client.on('interactionCreate', async (interaction) => {
     
     // Comando /setar-canal
     if (interaction.commandName === 'setar-canal') {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       const channel = interaction.options.getChannel('canal');
       
@@ -162,7 +162,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Comando /status-plano
     if (interaction.commandName === 'status-plano') {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       try {
         const guildDoc = await db.collection('guilds').doc(interaction.guildId).get();
@@ -196,7 +196,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Comando /assinar
     if (interaction.commandName === 'assinar') {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       try {
         const guildDoc = await db.collection('guilds').doc(interaction.guildId).get();
@@ -265,11 +265,11 @@ client.on('interactionCreate', async (interaction) => {
     if (!member.permissions.has(PermissionFlagsBits.ManageRoles) && !member.permissions.has(PermissionFlagsBits.Administrator)) {
       return interaction.reply({
         content: '❌ Você não tem permissão para gerenciar recrutamentos.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const [action, targetIdentifier] = customId.split(':');
     const embed = interaction.message.embeds[0];
