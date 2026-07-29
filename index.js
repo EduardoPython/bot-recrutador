@@ -50,12 +50,23 @@ admin.initializeApp({
 const db = admin.firestore();
 
 // ------------------------------------------------------------------
-// CONFIGURAÇÃO DO SERVIDOR EXPRESS (ACEITA JSON E FORM-DATA)
+// CONFIGURAÇÃO DO SERVIDOR EXPRESS
 // ------------------------------------------------------------------
 const app = express();
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true })); // 👈 ESSENCIAL PARA TESTES DO MERCADO PAGO
+
+// Parsers tolerantes a qualquer payload (evita erro 400 no middleware)
+app.use(express.json({ strict: false }));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.text({ type: '*/*' }));
+
+// Middleware para evitar que erros de parse lancem HTTP 400
+app.use((err, req, res, next) => {
+  if (err) {
+    return res.status(200).send('OK');
+  }
+  next();
+});
 
 const client = new Client({
   intents: [
@@ -359,7 +370,12 @@ client.on('interactionCreate', async (interaction) => {
 
 app.post('/api/apply', async (req, res) => {
   try {
-    const { gameNick, discordTag, discordUserId, roles, mainWeapon, weaponSpec, guildId } = req.body;
+    let body = req.body;
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch(e) {}
+    }
+
+    const { gameNick, discordTag, discordUserId, roles, mainWeapon, weaponSpec, guildId } = body || {};
 
     if (!guildId) {
       return res.status(400).json({ error: 'ID da guilda não informado.' });
@@ -445,7 +461,12 @@ app.post('/api/apply', async (req, res) => {
 
 app.post('/api/create-pix', async (req, res) => {
   try {
-    const { guildId, email } = req.body;
+    let body = req.body;
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch(e) {}
+    }
+
+    const { guildId, email } = body || {};
 
     if (!guildId) {
       return res.status(400).json({ error: 'ID da guilda é obrigatório.' });
@@ -516,12 +537,17 @@ async function activateGuildPro(guildId) {
   }
 }
 
-// Webhook unificado do Mercado Pago
-app.all('/api/webhook', async (req, res) => {
+// ROTA DO WEBHOOK UNIFICADA (Responde 200 para qualquer chamada do Mercado Pago)
+const handleWebhook = async (req, res) => {
   try {
-    const type = req.body?.type || req.query?.type || req.query?.topic;
-    const paymentId = req.body?.data?.id || req.query?.id || req.query?.['data.id'];
-    const action = req.body?.action;
+    let bodyData = req.body;
+    if (typeof bodyData === 'string') {
+      try { bodyData = JSON.parse(bodyData); } catch (e) { bodyData = {}; }
+    }
+
+    const type = bodyData?.type || req.query?.type || req.query?.topic;
+    const paymentId = bodyData?.data?.id || req.query?.id || req.query?.['data.id'];
+    const action = bodyData?.action;
 
     if ((type === 'payment' || type === 'collection') && paymentId) {
       try {
@@ -530,14 +556,14 @@ app.all('/api/webhook', async (req, res) => {
           await activateGuildPro(paymentInfo.external_reference);
         }
       } catch (err) {
-        console.log(`Aviso Webhook: Consulta do ID ${paymentId} ignorada (ID de teste simulado).`);
+        console.log(`Aviso Webhook: Consulta do ID ${paymentId} ignorada.`);
       }
     }
 
-    if ((type === 'order' || action === 'order.processed') && req.body?.data) {
-      const status = req.body.data.status;
-      const statusDetail = req.body.data.status_detail;
-      const guildId = req.body.data.external_reference;
+    if ((type === 'order' || action === 'order.processed') && bodyData?.data) {
+      const status = bodyData.data.status;
+      const statusDetail = bodyData.data.status_detail;
+      const guildId = bodyData.data.external_reference;
 
       if ((status === 'processed' || status === 'approved') && (statusDetail === 'accredited' || !statusDetail)) {
         await activateGuildPro(guildId);
@@ -546,10 +572,12 @@ app.all('/api/webhook', async (req, res) => {
 
     return res.status(200).send('OK');
   } catch (error) {
-    console.error('Erro no Webhook:', error);
     return res.status(200).send('OK');
   }
-});
+};
+
+app.get('/api/webhook', handleWebhook);
+app.post('/api/webhook', handleWebhook);
 
 app.get('/', (req, res) => {
   res.send('Bot Recrutador SaaS + Mercado Pago rodando com sucesso!');
