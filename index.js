@@ -17,7 +17,7 @@ const { MercadoPagoConfig, Payment } = require('mercadopago');
 // 🌐 CONFIGURAÇÕES DO SAAS
 const SITE_URL = 'https://eduardopython.github.io/recrutamento-albion/form.html';
 const FREE_LIMIT = 15; // Limite de fichas mensais do plano gratuito
-const PRO_PLAN_PRICE = 19.90; // Valor da assinatura mensal em R$
+const PRO_PLAN_PRICE = 0.01; // Valor da assinatura mensal em R$
 
 // ------------------------------------------------------------------
 // INICIALIZAÇÃO DO MERCADO PAGO
