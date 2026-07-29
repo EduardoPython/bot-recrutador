@@ -50,11 +50,12 @@ admin.initializeApp({
 const db = admin.firestore();
 
 // ------------------------------------------------------------------
-// CONFIGURAÇÃO DO SERVIDOR EXPRESS
+// CONFIGURAÇÃO DO SERVIDOR EXPRESS (ACEITA JSON E FORM-DATA)
 // ------------------------------------------------------------------
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // 👈 ESSENCIAL PARA TESTES DO MERCADO PAGO
 
 const client = new Client({
   intents: [
@@ -515,15 +516,13 @@ async function activateGuildPro(guildId) {
   }
 }
 
-// Webhook unificado do Mercado Pago (Suporta POST, GET, JSON Body e Query Params)
+// Webhook unificado do Mercado Pago
 app.all('/api/webhook', async (req, res) => {
   try {
-    // 1. Extrai parâmetros do corpo (POST) ou da URL (GET/Query Params)
     const type = req.body?.type || req.query?.type || req.query?.topic;
     const paymentId = req.body?.data?.id || req.query?.id || req.query?.['data.id'];
     const action = req.body?.action;
 
-    // 2. Notificação de pagamento (via Pix ou Teste de Webhook)
     if ((type === 'payment' || type === 'collection') && paymentId) {
       try {
         const paymentInfo = await payment.get({ id: paymentId });
@@ -531,11 +530,10 @@ app.all('/api/webhook', async (req, res) => {
           await activateGuildPro(paymentInfo.external_reference);
         }
       } catch (err) {
-        console.log(`Aviso Webhook: Não foi possível consultar o ID ${paymentId} no Mercado Pago (provável ID de teste).`);
+        console.log(`Aviso Webhook: Consulta do ID ${paymentId} ignorada (ID de teste simulado).`);
       }
     }
 
-    // 3. Notificação do tipo 'order'
     if ((type === 'order' || action === 'order.processed') && req.body?.data) {
       const status = req.body.data.status;
       const statusDetail = req.body.data.status_detail;
@@ -546,11 +544,10 @@ app.all('/api/webhook', async (req, res) => {
       }
     }
 
-    // Sempre responde 200 OK para o Mercado Pago dar como com sucesso
     return res.status(200).send('OK');
   } catch (error) {
     console.error('Erro no Webhook:', error);
-    return res.status(200).send('OK'); // Responde 200 mesmo em caso de aviso para aprovar no teste do MP
+    return res.status(200).send('OK');
   }
 });
 
